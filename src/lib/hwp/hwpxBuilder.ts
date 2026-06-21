@@ -28,8 +28,9 @@ import type {
   HwpControl,
   HwpTableControl,
   HwpTableCell,
+  HwpPictureControl,
 } from "./types.js";
-import { detectImageMime } from "./binData.js";
+import { detectImageMime, imagePixelSize } from "./binData.js";
 import {
   MIMETYPE,
   OWPML_NS,
@@ -729,9 +730,31 @@ const PIC_HEIGHT = 30000;
  * 한컴 정상 hp:pic 구조(etc/hwpjs_image_test 기준).
  * orgSz=curSz 1:1, 단위행렬 — 한글이 실제 크기를 재계산한다.
  */
-function buildPicXml(entry: BinEntry): string {
-  const w = PIC_WIDTH;
-  const h = PIC_HEIGHT;
+function buildPicXml(entry: BinEntry, ctrl?: HwpPictureControl): string {
+  const MAX_W = TABLE_BODY_WIDTH; // 본문 폭(42520)
+  const MAX_H = 70000; // ≈ A4 본문 높이
+  const nat = imagePixelSize(entry.data); // 원본 px (비율)
+  const ratio = nat && nat.w > 0 ? nat.h / nat.w : PIC_HEIGHT / PIC_WIDTH; // h/w
+  const resolve = (d: { v: number; pct: boolean }): number =>
+    Math.round(d.pct ? (d.v / 100) * MAX_W : d.v * 75);
+  let w: number | undefined = ctrl?.width ? resolve(ctrl.width) : undefined;
+  let h: number | undefined = ctrl?.height ? resolve(ctrl.height) : undefined;
+  if (w !== undefined && h === undefined) h = Math.round(w * ratio); // 비율 보완
+  else if (h !== undefined && w === undefined) w = Math.round(h / (ratio || 1));
+  if (w === undefined && h === undefined) {
+    if (nat && nat.w > 0 && nat.h > 0) {
+      const ow = nat.w * 75;
+      const oh = nat.h * 75;
+      const s = Math.min(1, MAX_W / ow, MAX_H / oh); // 축소만
+      w = Math.round(ow * s);
+      h = Math.round(oh * s);
+    } else {
+      w = PIC_WIDTH;
+      h = PIC_HEIGHT; // 폴백
+    }
+  }
+  w = Math.max(1, w ?? PIC_WIDTH);
+  h = Math.max(1, h ?? PIC_HEIGHT);
   return (
     `<hp:pic id="${makeParaId()}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" ` +
     `lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${makeParaId()}" reverse="0">` +
@@ -766,7 +789,7 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
     case "picture": {
       const entry = binEntries.find((b) => b.id === `image${ctrl.binDataId}`);
       if (!entry) return "";
-      return `<hp:run charPrIDRef="0">${buildPicXml(entry)}</hp:run>`;
+      return `<hp:run charPrIDRef="0">${buildPicXml(entry, ctrl)}</hp:run>`;
     }
     case "shape": {
       // 도형: 1차 포팅에서는 placeholder. line 은 좌표만 보존.

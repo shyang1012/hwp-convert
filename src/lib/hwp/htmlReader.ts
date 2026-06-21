@@ -951,8 +951,38 @@ function collectTableParagraph(
   };
 }
 
+/** CSS length(px/%) → {v, pct}. 그 외(auto 등) undefined. */
+function parseLengthPxPct(val: string | undefined): { v: number; pct: boolean } | undefined {
+  if (!val) return undefined;
+  const s = val.trim();
+  let m = /^([\d.]+)px$/.exec(s);
+  if (m) return { v: parseFloat(m[1]), pct: false };
+  m = /^([\d.]+)%$/.exec(s);
+  if (m) return { v: parseFloat(m[1]), pct: true };
+  m = /^([\d.]+)$/.exec(s); // 단위 없는 속성값 = px
+  if (m) return { v: parseFloat(m[1]), pct: false };
+  return undefined;
+}
+
+/** img 의 style width/height(우선) 또는 width/height 속성 → 표시 크기 힌트. */
+function parseImgSize(node: HtmlNode): { width?: { v: number; pct: boolean }; height?: { v: number; pct: boolean } } {
+  const style = node.attrs.style ?? "";
+  const styleVal = (prop: string): string | undefined => {
+    for (const decl of style.split(";")) {
+      const i = decl.indexOf(":");
+      if (i < 0) continue;
+      if (decl.slice(0, i).trim().toLowerCase() === prop) return decl.slice(i + 1).trim();
+    }
+    return undefined;
+  };
+  const width = parseLengthPxPct(styleVal("width")) ?? parseLengthPxPct(node.attrs.width);
+  const height = parseLengthPxPct(styleVal("height")) ?? parseLengthPxPct(node.attrs.height);
+  return { width, height };
+}
+
 function imageNodeToControl(node: HtmlNode, ctx: BuildContext): HwpControl | null {
   const src = node.attrs.src ?? "";
+  const size = parseImgSize(node);
   const match = /^data:([^;]+);base64,(.*)$/i.exec(src);
   if (!match) {
     // data URI 가 아니면 resolver(주입 시)로 file://·로컬 경로 해석. 없으면 skip.
@@ -960,7 +990,7 @@ function imageNodeToControl(node: HtmlNode, ctx: BuildContext): HwpControl | nul
     if (resolved && resolved.data.length > 0) {
       const id = ctx.nextBinDataId++;
       ctx.binData.set(id, { data: resolved.data, extension: resolved.extension.toLowerCase() });
-      return { kind: "picture", binDataId: id };
+      return { kind: "picture", binDataId: id, ...size };
     }
     return null;
   }
@@ -989,7 +1019,7 @@ function imageNodeToControl(node: HtmlNode, ctx: BuildContext): HwpControl | nul
   }
   const id = ctx.nextBinDataId++;
   ctx.binData.set(id, { data: bytes, extension: ext });
-  return { kind: "picture", binDataId: id };
+  return { kind: "picture", binDataId: id, ...size };
 }
 
 function extractPreText(node: HtmlNode): string {

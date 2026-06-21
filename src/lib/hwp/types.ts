@@ -103,6 +103,10 @@ export interface HwpPictureControl {
   kind: "picture";
   /** DocInfo BIN_DATA 의 storageId */
   binDataId: number;
+  /** CSS 표시 너비 — px 또는 % (pct=true). 미설정 시 원본 px(축소만) */
+  width?: { v: number; pct: boolean };
+  /** CSS 표시 높이 — px 또는 %. 미설정 시 너비·원본 비율로 보완 */
+  height?: { v: number; pct: boolean };
 }
 
 export interface HwpHeaderControl {
