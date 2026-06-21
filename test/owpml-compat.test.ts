@@ -170,3 +170,36 @@ describe("OWPML 폰트 face 속성", () => {
     expect(header).toMatch(/<hh:font[^>]*\sface="/);
   });
 });
+
+describe("OWPML borderFill 배경 채우기 (igp)", () => {
+  it("한컴 예약 기본 borderFill: id=1 은 NONE, id=2 는 SOLID, 둘 다 채우기 없음 (1-based 무회귀)", async () => {
+    // 한컴 규약: id 1 = 테두리 NONE(charPr 참조), id 2 = SOLID(표 격자). 커스텀은 id 3+.
+    const zip = await zipOf(await htmlToHwpx("<p>본문</p>"));
+    const header = await zip.file("Contents/header.xml")!.async("string");
+    const bf1 = /<hh:borderFill id="1"[\s\S]*?<\/hh:borderFill>/.exec(header);
+    const bf2 = /<hh:borderFill id="2"[\s\S]*?<\/hh:borderFill>/.exec(header);
+    expect(bf1).not.toBeNull();
+    expect(bf2).not.toBeNull();
+    expect(bf1![0]).toContain('<hh:leftBorder type="NONE"'); // id 1 = 테두리 없음
+    expect(bf1![0]).not.toContain("fillBrush");
+    expect(bf2![0]).toContain('<hh:leftBorder type="SOLID" width="0.1 mm" color="#000000"/>'); // id 2 = 격자
+    expect(bf2![0]).not.toContain("fillBrush");
+    // charPr 는 테두리 없는 id 1 을 참조해야 글자에 테두리 박스가 생기지 않는다.
+    expect(header).toMatch(/<hh:charPr id="0"[^>]*borderFillIDRef="1"/);
+  });
+
+  it("블록 배경 문단은 paraPr borderFillIDRef(N≥1) 로 채우기 borderFill 을 참조한다 (참조 정합)", async () => {
+    const zip = await zipOf(
+      await htmlToHwpx(`<p style="background-color: rgb(0, 0, 255)">파란배경</p>`)
+    );
+    const header = await zip.file("Contents/header.xml")!.async("string");
+    const ref = /<hh:paraPr[^>]*borderFillIDRef="([1-9]\d*)"/.exec(header);
+    expect(ref).not.toBeNull();
+    const refId = ref![1];
+    const bf = new RegExp(`<hh:borderFill id="${refId}"[\\s\\S]*?</hh:borderFill>`).exec(header);
+    expect(bf).not.toBeNull();
+    expect(bf![0]).toContain('faceColor="#0000FF"'); // 참조된 borderFill 에 실제 채우기 존재
+    // 한컴은 paraPr 속성만으론 문단 채우기를 안 그린다 — <hh:border> 자식이 있어야 렌더됨(실측 검증).
+    expect(header).toMatch(new RegExp(`<hh:border borderFillIDRef="${refId}"`));
+  });
+});

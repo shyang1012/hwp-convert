@@ -13,6 +13,14 @@ async function headerOf(html: string): Promise<string> {
   return await zip.file("Contents/header.xml")!.async("string");
 }
 
+async function bothOf(html: string): Promise<{ header: string; section: string }> {
+  const zip = await JSZip.loadAsync(await htmlToHwpx(html));
+  return {
+    header: await zip.file("Contents/header.xml")!.async("string"),
+    section: await zip.file("Contents/section0.xml")!.async("string"),
+  };
+}
+
 describe("html inline style 보존", () => {
   it("color: rgb(...) → charShape textColor", async () => {
     const h = await headerOf(`<p style="color: rgb(255, 0, 0)">빨강</p>`);
@@ -24,9 +32,24 @@ describe("html inline style 보존", () => {
     expect(h).toMatch(/textColor="#1A5276"/i);
   });
 
-  it("background-color → charShape shadeColor", async () => {
+  it("블록 <p> background-color → 문단 borderFill 채우기 (글자 음영 아님)", async () => {
+    // igp: 블록 레벨 배경은 글자 단위 shadeColor 가 아니라 문단 전체 채우기 박스여야 한다.
     const h = await headerOf(`<p style="background-color: rgb(0, 0, 255)">파란배경</p>`);
+    expect(h).toMatch(/<hc:fillBrush><hc:winBrush faceColor="#0000FF"/);
+    expect(h).toMatch(/<hh:paraPr[^>]*borderFillIDRef="[1-9]/);
+    expect(h).not.toMatch(/shadeColor="#0000FF"/);
+  });
+
+  it("인라인 <span> background-color → 글자 음영 shadeColor 유지", async () => {
+    // 인라인 배경은 종전대로 글자 음영(문단 박스 아님).
+    const h = await headerOf(`<p><span style="background-color: rgb(0, 0, 255)">음영</span></p>`);
     expect(h).toMatch(/shadeColor="#0000FF"/);
+  });
+
+  it("제목 div 남색 배경 → 문단 박스 borderFill (테두리 NONE + 남색 채우기)", async () => {
+    const h = await headerOf(`<div style="background-color: rgb(26,82,118)"><strong>발주서</strong></div>`);
+    expect(h).toMatch(/faceColor="#1A5276"/i);
+    expect(h).toMatch(/<hh:paraPr[^>]*borderFillIDRef="[1-9]/);
   });
 
   it("font-size: 20px → charShape height(1500 = 15pt)", async () => {
@@ -44,12 +67,13 @@ describe("html inline style 보존", () => {
     expect(h).toMatch(/horizontal="RIGHT"/);
   });
 
-  it("표 셀(td)의 inline style 색상도 보존", async () => {
-    const h = await headerOf(
+  it("표 셀(td)의 inline style: 글자색 보존 + 배경은 셀 borderFill 채우기", async () => {
+    const { header, section } = await bothOf(
       `<table><tr><td style="color: rgb(255,0,0); background-color: rgb(0,0,255)">셀</td></tr></table>`
     );
-    expect(h).toMatch(/textColor="#FF0000"/);
-    expect(h).toMatch(/shadeColor="#0000FF"/);
+    expect(header).toMatch(/textColor="#FF0000"/); // 글자색 상속 유지
+    expect(header).toMatch(/faceColor="#0000FF"/); // 셀 배경 채우기
+    expect(section).toMatch(/<hp:tc[^>]*borderFillIDRef="[1-9]/); // 셀이 색 채우기 borderFill 참조
   });
 
   it("중첩 div 안 텍스트의 색상 상속", async () => {

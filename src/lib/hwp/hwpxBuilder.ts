@@ -270,12 +270,32 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
   );
 }
 
+/**
+ * borderFill id 는 한컴 규약상 1-based. 한컴 기본 파일을 그대로 모사:
+ *   id 1 = 테두리 NONE·채우기 없음 (charPr/일반 문단이 참조)
+ *   id 2 = 테두리 SOLID·채우기 없음 (표 격자 기본)
+ *   id 3+ = IR 의 커스텀 채우기 borderFill (블록/셀 배경)
+ * IR 커스텀 인덱스 k → 출력 id (k + RESERVED_BORDERFILLS + 1) = k + 3.
+ */
+const RESERVED_BORDERFILLS = 2;
+
 function buildBorderFillsXml(borderFills: HwpBorderFill[]): string {
-  const cnt = Math.max(1, borderFills.length);
-  const items: string[] = [];
-  for (let i = 0; i < cnt; i++) {
-    items.push(buildSingleBorderFillXml(i, borderFills[i]));
-  }
+  const none: HwpBorderFill = {
+    attr: 0,
+    borders: [
+      { lineType: 0, widthIndex: 0, color: 0 },
+      { lineType: 0, widthIndex: 0, color: 0 },
+      { lineType: 0, widthIndex: 0, color: 0 },
+      { lineType: 0, widthIndex: 0, color: 0 },
+    ],
+    diagonal: { diagonalType: 0, widthIndex: 0, color: 0 },
+  };
+  const items: string[] = [
+    buildSingleBorderFillXml(1, none), // id 1: NONE
+    buildSingleBorderFillXml(2, undefined), // id 2: SOLID(undefined 합성)
+  ];
+  borderFills.forEach((bf, k) => items.push(buildSingleBorderFillXml(k + RESERVED_BORDERFILLS + 1, bf)));
+  const cnt = RESERVED_BORDERFILLS + borderFills.length;
   return `<hh:borderFills itemCnt="${cnt}">${items.join("")}</hh:borderFills>`;
 }
 
@@ -328,10 +348,11 @@ function buildSingleBorderFillXml(id: number, bf?: HwpBorderFill): string {
   const hasDiag = slashKind !== 0 || backSlashKind !== 0;
   const diagonalEl = `<hh:diagonal type="${hasDiag ? "SOLID" : "NONE"}" width="${diagWidth}" color="${diagColor}"/>`;
 
+  // 채우기 브러시는 core(hc:) 네임스페이스. hh:fillBrush 는 한컴이 무시한다(테두리는 hh: 가 맞음).
   const fillEl = bf?.fill
-    ? `<hh:fillBrush>` +
-      `<hh:winBrush faceColor="${colorBgrToHex(bf.fill.backgroundColor)}" hatchColor="${colorBgrToHex(bf.fill.patternColor)}" hatchStyle="${bf.fill.patternType < 0 ? "NONE" : "HORIZONTAL"}" alpha="0"/>` +
-      `</hh:fillBrush>`
+    ? `<hc:fillBrush>` +
+      `<hc:winBrush faceColor="${colorBgrToHex(bf.fill.backgroundColor)}" hatchColor="${colorBgrToHex(bf.fill.patternColor)}" hatchStyle="${bf.fill.patternType < 0 ? "NONE" : "HORIZONTAL"}" alpha="0"/>` +
+      `</hc:fillBrush>`
     : "";
 
   return (
@@ -449,7 +470,7 @@ function buildCharPropertiesXml(charShapes: HwpCharShape[]): string {
     // 최소 1개 fallback
     return (
       `<hh:charProperties itemCnt="1">` +
-      `<hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="0">` +
+      `<hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">` +
       defaultFontGroupXml() +
       `</hh:charPr>` +
       `</hh:charProperties>`
@@ -480,7 +501,7 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
   const shadeColor = cs.shadeColor === 0xffffff || cs.shadeColor === 0 ? "none" : colorBgrToHex(cs.shadeColor);
 
   return (
-    `<hh:charPr id="${id}" height="${cs.baseSize}" textColor="${textColor}" shadeColor="${shadeColor}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="0">` +
+    `<hh:charPr id="${id}" height="${cs.baseSize}" textColor="${textColor}" shadeColor="${shadeColor}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">` +
     fontRef +
     ratio +
     spacing +
@@ -524,8 +545,18 @@ function buildParaPropertiesXml(paraShapes: HwpParaShape[]): string {
 
 function buildParaPrXml(id: number, ps: HwpParaShape): string {
   const align = alignToOwpml(ps.alignment);
+  // 색 채우기 문단만 borderFillIDRef(id≥3) 참조. 미설정은 생략(테두리/채우기 없음).
+  // IR 커스텀 인덱스(0-based) → 출력 id = k + RESERVED_BORDERFILLS + 1.
+  const emittedBf =
+    ps.borderFillIDRef !== undefined ? ps.borderFillIDRef + RESERVED_BORDERFILLS + 1 : undefined;
+  const bfRef = emittedBf !== undefined ? ` borderFillIDRef="${emittedBf}"` : "";
+  // 문단 배경/테두리는 paraPr 속성만으로는 한컴이 그리지 않는다 — <hh:border> 자식이 필요(실측 검증).
+  const borderChild =
+    emittedBf !== undefined
+      ? `<hh:border borderFillIDRef="${emittedBf}" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/>`
+      : "";
   return (
-    `<hh:paraPr id="${id}" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="0" suppressLineNumbers="0" checked="0">` +
+    `<hh:paraPr id="${id}" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="0" suppressLineNumbers="0" checked="0"${bfRef}>` +
     `<hh:align horizontal="${align}" vertical="BASELINE"/>` +
     `<hh:heading type="NONE" idRef="0" level="0"/>` +
     `<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>` +
@@ -537,6 +568,7 @@ function buildParaPrXml(id: number, ps: HwpParaShape): string {
     `<hh:next value="${ps.nextSpacing}"/>` +
     `</hh:margin>` +
     `<hh:lineSpacing type="PERCENT" value="${Math.max(0, ps.lineSpacing)}"/>` +
+    borderChild +
     `</hh:paraPr>`
   );
 }
@@ -783,7 +815,7 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
             cellInner ||
             `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"/>${DEFAULT_LINESEG}</hp:p>`;
           return (
-            `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="0">` +
+            `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${cell.borderFillId !== undefined ? cell.borderFillId + RESERVED_BORDERFILLS + 1 : 2}">` +
             `<hp:subList ${subListAttrs}>${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${cell.col}" rowAddr="${cell.row}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
@@ -800,7 +832,7 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   return (
     `<hp:tbl id="${makeParaId()}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" ` +
     `lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="1" rowCnt="${rowCount}" colCnt="${colCount}" ` +
-    `cellSpacing="0" borderFillIDRef="0" noAdjust="0">` +
+    `cellSpacing="0" borderFillIDRef="2" noAdjust="0">` +
     `<hp:sz width="${tableW}" widthRelTo="ABSOLUTE" height="${tableH}" heightRelTo="ABSOLUTE" protect="0"/>` +
     `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" ` +
     `vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +

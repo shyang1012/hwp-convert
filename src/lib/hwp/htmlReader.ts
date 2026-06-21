@@ -23,6 +23,7 @@ import type {
   HwpTableCell,
   HwpCharShape,
   HwpParaShape,
+  HwpBorderFill,
   HwpStyle,
   HwpFaceName,
   ImageResolver,
@@ -89,6 +90,9 @@ interface BuildContext {
   charShapes: HwpCharShape[];
   paraShapes: HwpParaShape[];
   paraShapeIds: Map<string, number>;
+  // 블록/셀 배경 채우기 borderFill (id 0 = 기본, 색 채우기는 1+)
+  borderFills: HwpBorderFill[];
+  borderFillIds: Map<string, number>;
 }
 
 interface ShapeIds {
@@ -178,6 +182,8 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
     charShapes: [defaultCharShape()],
     paraShapes: [defaultParaShape()],
     paraShapeIds: new Map([["default", 0]]),
+    borderFills: [], // 커스텀 채우기만. 한컴 예약 기본(none/solid)은 빌더가 id 1·2 로 선두 출력.
+    borderFillIds: new Map(),
   };
   ctx.charShapeIds.set("default", 0);
 
@@ -224,7 +230,7 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       paraShapes: ctx.paraShapes,
       styles: [{ name: "바탕글", engName: "Normal", paraShapeId: 0, charShapeId: 0 }],
       binData: [],
-      borderFills: [],
+      borderFills: ctx.borderFills,
       numberings: [],
       bullets: [],
       tabDefs: [],
@@ -284,9 +290,17 @@ function renderNode(
       const runs = collectInlineRuns(node, ids, ctx, state, baseShapeId);
       const text = runsToText(runs);
       if (!text) return [];
+      const hStyle = parseInlineStyle(node.attrs.style);
+      const hBfId =
+        hStyle.shadeColor !== undefined
+          ? registerBorderFill(ctx, hStyle.shadeColor, false)
+          : undefined;
       return [
         {
-          paraShapeId: 0,
+          paraShapeId:
+            hStyle.align !== undefined || hBfId !== undefined
+              ? registerParaShape(ctx, hStyle.align ?? "justify", hBfId)
+              : 0,
           styleId: 0,
           text,
           runs,
@@ -409,10 +423,17 @@ function renderNodeChildren(
     const text = runsToText(runs);
     const controls = collectInlineControls(node, ctx);
     if (!text && controls.length === 0) return [];
-    const align = parseInlineStyle(node.attrs.style).align;
+    const ownStyle = parseInlineStyle(node.attrs.style);
+    const align = ownStyle.align;
+    // 블록 태그의 배경은 문단 전체 채우기(borderFill)로. 인라인 태그 배경은 walkInline 이 글자 음영 처리.
+    const blockBg = !isInlineTag(node.tag) ? ownStyle.shadeColor : undefined;
+    const bfId = blockBg !== undefined ? registerBorderFill(ctx, blockBg, false) : undefined;
     return [
       {
-        paraShapeId: align ? registerParaShape(ctx, align) : 0,
+        paraShapeId:
+          align !== undefined || bfId !== undefined
+            ? registerParaShape(ctx, align ?? "justify", bfId)
+            : 0,
         styleId: 0,
         text: prefix + text,
         runs:
@@ -490,7 +511,9 @@ function walkInline(
   // inline style(color/background-color/font-size) 상속 누적
   const st = parseInlineStyle(node.attrs.style);
   if (st.textColor !== undefined) nextState = { ...nextState, textColor: st.textColor };
-  if (st.shadeColor !== undefined) nextState = { ...nextState, shadeColor: st.shadeColor };
+  // 배경은 인라인 태그(span/strong 등)만 글자 음영(shadeColor)으로 전파.
+  // 블록(div/p/td 등)의 배경은 문단/셀 borderFill 로 분기되므로 글자 음영으로 새지 않게 한다.
+  if (st.shadeColor !== undefined && isInlineTag(tag)) nextState = { ...nextState, shadeColor: st.shadeColor };
   if (st.baseSize !== undefined) nextState = { ...nextState, baseSize: st.baseSize };
   for (const child of node.children) {
     walkInline(child, ids, ctx, nextState, runs, baseId);
@@ -563,11 +586,15 @@ function collectTableParagraph(
   const cells: HwpTableCell[] = tcs.map(({ row, col, isHeader, node, colSpan, rowSpan }) => {
     // baseId 를 고정하지 않고 state.bold 로 처리해야 셀의 inline style(색/크기)이 반영된다.
     const runs = collectInlineRuns(node, ids, ctx, { bold: isHeader, italic: false, mono: false });
+    // 셀 배경은 셀 borderFill(격자 SOLID 유지 + 채우기)로. (글자 음영 아님)
+    const cellBg = parseInlineStyle(node.attrs.style).shadeColor;
+    const borderFillId = cellBg !== undefined ? registerBorderFill(ctx, cellBg, true) : undefined;
     return {
       col,
       row,
       colSpan,
       rowSpan,
+      borderFillId,
       paragraphs: [
         {
           paraShapeId: 0,
@@ -711,6 +738,28 @@ function defaultParaShape(): HwpParaShape {
   };
 }
 
+/**
+ * 단색 채우기 borderFill 동적 등록 → docInfo.borderFills(커스텀) 0-based 인덱스 반환.
+ * withBorders=true → 표 셀(SOLID 검정 4면 격자 유지 + 채우기), false → 블록 문단(테두리 없음 + 채우기).
+ * 색·테두리 조합으로 dedupe. 빌더가 예약 2개(none=id1, solid=id2) 뒤 id 3+ 로 출력한다.
+ */
+function registerBorderFill(ctx: BuildContext, fillColor: number, withBorders: boolean): number {
+  const key = `bf:${fillColor}:${withBorders ? 1 : 0}`;
+  const existing = ctx.borderFillIds.get(key);
+  if (existing !== undefined) return existing;
+  const line = (lineType: number) => ({ lineType, widthIndex: 0, color: 0 });
+  const b = withBorders ? line(1) : line(0); // 1=SOLID, 0=NONE
+  const id = ctx.borderFills.length;
+  ctx.borderFills.push({
+    attr: 0,
+    borders: [{ ...b }, { ...b }, { ...b }, { ...b }],
+    diagonal: { diagonalType: 0, widthIndex: 0, color: 0 },
+    fill: { backgroundColor: fillColor, patternColor: 0, patternType: -1 },
+  });
+  ctx.borderFillIds.set(key, id);
+  return id;
+}
+
 function defaultFileHeader(): HwpDocument["header"] {
   return {
     version: { major: 5, minor: 0, build: 6, revision: 0 },
@@ -741,14 +790,18 @@ function registerCharShape(ctx: BuildContext, cs: HwpCharShape): number {
   return id;
 }
 
-/** 정렬별 paraShape 동적 등록. */
-function registerParaShape(ctx: BuildContext, align: HwpParaShape["alignment"]): number {
-  if (align === "justify") return 0; // 기본(default)과 동일
-  const key = `align:${align}`;
+/** 정렬 + 문단 배경(borderFillIDRef)별 paraShape 동적 등록. */
+function registerParaShape(
+  ctx: BuildContext,
+  align: HwpParaShape["alignment"],
+  borderFillIDRef?: number
+): number {
+  if (align === "justify" && borderFillIDRef === undefined) return 0; // 기본(default)과 동일
+  const key = `align:${align}|bf:${borderFillIDRef ?? "n"}`;
   const existing = ctx.paraShapeIds.get(key);
   if (existing !== undefined) return existing;
   const id = ctx.paraShapes.length;
-  ctx.paraShapes.push({ ...defaultParaShape(), alignment: align });
+  ctx.paraShapes.push({ ...defaultParaShape(), alignment: align, borderFillIDRef });
   ctx.paraShapeIds.set(key, id);
   return id;
 }

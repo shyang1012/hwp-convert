@@ -85,6 +85,8 @@ export interface HwpTableCell {
   colSpan: number;
   rowSpan: number;
   paragraphs: HwpParagraph[];
+  /** 셀 배경/테두리 — docInfo.borderFills 인덱스. 미설정 시 기본(0) */
+  borderFillId?: number;
 }
 
 export interface HwpPictureControl {
@@ -240,6 +242,8 @@ export interface HwpParaShape {
   prevSpacing: number;
   nextSpacing: number;
   lineSpacing: number;
+  /** 문단 배경/테두리 — docInfo.borderFills 인덱스. 미설정 시 문단 채우기 없음 */
+  borderFillIDRef?: number;
 }
 
 export interface HwpStyle {
