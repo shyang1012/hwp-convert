@@ -14,6 +14,26 @@
 
 이 프로젝트는 이슈 추적에 **bd (beads)** 를 쓴다. `bd onboard` 로 시작.
 
+## Team & Delegation (모델 할당)
+
+**나(Claude)의 역할: PL + 풀스택 라이브러리 개발자.** 아키텍처·변환 로직 방향·리뷰 최종 승인은 PL 직접. 구현/테스트/문서는 서브에이전트로 위임.
+
+| 역할(서브에이전트) | 담당 | 위임 기준 | 모델 |
+|------|------|----------|------|
+| 라이브러리 개발자 | 파서·변환기(hwp/owpml/reader/writer) 구현 | 구현 태스크, 버그 수정 | sonnet (단순 haiku) |
+| 테스트 엔지니어 | vitest 단위·통합·e2e, 정합성(owpml-compat) | 테스트 작성/갱신, 회귀 검증 | sonnet (단순 haiku) |
+| 테크라이터 | README·docs·AGENTS·CHANGELOG, 출처(LICENSE/NOTICE) 정합 | 문서 구조화, 출처 정합 유지 | sonnet |
+| OWPML/한컴 호환 전문가 | OWPML 스펙 대조, 한글 열림 검증(hwp MCP) | 포맷 정합, 한컴 호환 진단 | sonnet |
+
+**모델 할당 정책**:
+- **PL(나) = opus** (사용자 세션이 sonnet 이면 PL 도 sonnet)
+- **팀원(서브에이전트) = sonnet** 기본. 아래 3조건 **모두** 충족 시 haiku: ① 단일 파일 수정/탐색 ② 아키텍처 판단 불필요 ③ 명확한 입출력(포맷 변환·단순 검색·lint).
+- Agent 호출 시 `model` 파라미터를 **반드시 명시** (미지정 시 opus 세션이 opus 상속 → 낭비).
+
+**위임 판단**: 아키텍처/설계 결정 → PL 직접 / 문서 → 테크라이터 / 구현·테스트 → 담당 역할(단순이면 haiku) / 포맷·한컴 호환 → OWPML 전문가.
+
+**역할 기반 리뷰 관점**(코드 리뷰 시 종합): PL(아키텍처 정합·API 안정성) · 개발자(구현 품질·에러 처리) · 테스트(커버리지·정합성 회귀) · 테크라이터(문서/출처 정합) · OWPML 전문가(한컴 호환·스펙 준수).
+
 ## What is hwp-convert
 
 HWP 5.0(CFB)·HWPX(OWPML) ↔ Markdown/HTML 변환 + **한컴오피스에서 실제로 열리는 HWPX 생성** 라이브러리 (순수 TypeScript, 브라우저/Node).
