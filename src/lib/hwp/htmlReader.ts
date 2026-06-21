@@ -24,6 +24,7 @@ import type {
   HwpCharShape,
   HwpParaShape,
   HwpBorderFill,
+  HwpBorderLine,
   HwpStyle,
   HwpFaceName,
   ImageResolver,
@@ -206,6 +207,123 @@ function parseLayoutStyle(style: string | undefined): LayoutStyle | null {
     return { kind: "flexRow" };
   }
   return null;
+}
+
+// HWP 너비 인덱스 → mm (hwpxBuilder.BORDER_WIDTH_MM 와 동일). px→mm 후 최근접 인덱스.
+const BORDER_WIDTH_MM_NUM = [
+  0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
+];
+
+function pxToWidthIndex(px: number): number {
+  if (!(px > 0)) return 0;
+  const mm = (px * 25.4) / 96; // CSS px(96dpi) → mm
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < BORDER_WIDTH_MM_NUM.length; i++) {
+    const d = Math.abs(BORDER_WIDTH_MM_NUM[i] - mm);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function styleToLineType(s: string): number {
+  switch (s) {
+    case "solid":
+      return 1;
+    case "dashed":
+      return 2;
+    case "dotted":
+      return 3;
+    case "double":
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+interface BorderSpec {
+  w?: number;
+  s?: string;
+  c?: number;
+}
+
+/** CSS border(단축/전면/개별 면)를 4면 HwpBorderLine[left,right,top,bottom] + hasBorder 로 파싱. */
+function parseBorderStyle(style: string | undefined): {
+  borders: [HwpBorderLine, HwpBorderLine, HwpBorderLine, HwpBorderLine];
+  hasBorder: boolean;
+} {
+  const all: BorderSpec = {};
+  const sides: Record<"left" | "right" | "top" | "bottom", BorderSpec> = {
+    left: {},
+    right: {},
+    top: {},
+    bottom: {},
+  };
+  const applyShorthand = (o: BorderSpec, val: string): void => {
+    for (const tok of val.split(/\s+/).filter(Boolean)) {
+      if (/^[\d.]+px$|^0$/.test(tok)) {
+        const m = /([\d.]+)px/.exec(tok);
+        o.w = m ? parseFloat(m[1]) : 0;
+      } else if (/^(solid|dashed|dotted|double|none|hidden)$/i.test(tok)) {
+        o.s = tok.toLowerCase();
+      } else {
+        const c = parseColorToHwp(tok);
+        if (c !== undefined) o.c = c;
+      }
+    }
+  };
+  if (style) {
+    for (const decl of style.split(";")) {
+      const i = decl.indexOf(":");
+      if (i < 0) continue;
+      const prop = decl.slice(0, i).trim().toLowerCase();
+      const val = decl.slice(i + 1).trim();
+      const sideM = /^border-(left|right|top|bottom)$/.exec(prop);
+      const sidePropM = /^border-(left|right|top|bottom)-(width|style|color)$/.exec(prop);
+      if (prop === "border") applyShorthand(all, val);
+      else if (sideM) applyShorthand(sides[sideM[1] as keyof typeof sides], val);
+      else if (prop === "border-width") {
+        const m = /([\d.]+)px/.exec(val);
+        all.w = m ? parseFloat(m[1]) : /^0$/.test(val) ? 0 : all.w;
+      } else if (prop === "border-style") all.s = val.toLowerCase();
+      else if (prop === "border-color") {
+        const c = parseColorToHwp(val);
+        if (c !== undefined) all.c = c;
+      } else if (sidePropM) {
+        const o = sides[sidePropM[1] as keyof typeof sides];
+        if (sidePropM[2] === "width") {
+          const m = /([\d.]+)px/.exec(val);
+          o.w = m ? parseFloat(m[1]) : /^0$/.test(val) ? 0 : o.w;
+        } else if (sidePropM[2] === "style") o.s = val.toLowerCase();
+        else {
+          const c = parseColorToHwp(val);
+          if (c !== undefined) o.c = c;
+        }
+      }
+    }
+  }
+  const none = (): HwpBorderLine => ({ lineType: 0, widthIndex: 0, color: 0 });
+  const build = (s: BorderSpec): HwpBorderLine => {
+    const w = s.w ?? all.w;
+    const st = (s.s ?? all.s ?? "").toLowerCase();
+    const c = s.c ?? all.c ?? 0;
+    if (w === undefined && st === "") return none(); // 면에 아무 지정 없음
+    if (w !== undefined && w <= 0) return none(); // 너비 0
+    if (st === "none" || st === "hidden") return none();
+    const lineType = st === "" ? 1 : styleToLineType(st) || 1; // 스타일 미지정+너비>0 → solid
+    return { lineType, widthIndex: pxToWidthIndex(w ?? 1), color: c };
+  };
+  const borders: [HwpBorderLine, HwpBorderLine, HwpBorderLine, HwpBorderLine] = [
+    build(sides.left),
+    build(sides.right),
+    build(sides.top),
+    build(sides.bottom),
+  ];
+  const hasBorder = borders.some((b) => b.lineType > 0);
+  return { borders, hasBorder };
 }
 
 export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDocument {
@@ -633,11 +751,17 @@ function collectDivColumnsAsParagraph(
     const child = blockChildren[idx];
     // F-01: renderNode(child) — child 가 또 layout 이면 중첩 표로, 아니면 renderNodeChildren 경로로 정규화.
     const paragraphs = child ? renderNode(child, ids, ctx, state, "") : [];
+    // PR-03: 셀에는 자식 div 의 border 만(채우기 X). 배경은 renderNode(child) 의 igp 문단 채우기에 위임.
+    const border = child ? parseBorderStyle(child.attrs.style) : { hasBorder: false, borders: null };
+    const borderFillId = border.hasBorder
+      ? registerBorderFillEx(ctx, border.borders, undefined)
+      : undefined;
     cells.push({
       col,
       row,
       colSpan: 1,
       rowSpan: 1,
+      borderFillId,
       paragraphs: paragraphs.length > 0 ? paragraphs : [emptyPara()],
     });
   }
@@ -710,9 +834,13 @@ function collectTableParagraph(
   const cells: HwpTableCell[] = tcs.map(({ row, col, isHeader, node, colSpan, rowSpan }) => {
     // baseId 를 고정하지 않고 state.bold 로 처리해야 셀의 inline style(색/크기)이 반영된다.
     const runs = collectInlineRuns(node, ids, ctx, { bold: isHeader, italic: false, mono: false });
-    // 셀 배경은 셀 borderFill(격자 SOLID 유지 + 채우기)로. (글자 음영 아님)
+    // 셀 배경/테두리 → 셀 borderFill. 명시 border 있으면 그 테두리, 없고 bg 만 있으면 검정 격자 유지(PR-01).
     const cellBg = parseInlineStyle(node.attrs.style).shadeColor;
-    const borderFillId = cellBg !== undefined ? registerBorderFill(ctx, cellBg, true) : undefined;
+    const cb = parseBorderStyle(node.attrs.style);
+    let borderFillId: number | undefined;
+    if (cb.hasBorder) borderFillId = registerBorderFillEx(ctx, cb.borders, cellBg);
+    else if (cellBg !== undefined) borderFillId = registerBorderFill(ctx, cellBg, true); // 격자+채우기 유지
+    else borderFillId = undefined;
     return {
       col,
       row,
@@ -879,6 +1007,36 @@ function registerBorderFill(ctx: BuildContext, fillColor: number, withBorders: b
     borders: [{ ...b }, { ...b }, { ...b }, { ...b }],
     diagonal: { diagonalType: 0, widthIndex: 0, color: 0 },
     fill: { backgroundColor: fillColor, patternColor: 0, patternType: -1 },
+  });
+  ctx.borderFillIds.set(key, id);
+  return id;
+}
+
+/**
+ * 임의 4면 테두리 + 선택 채우기 borderFill 등록 → 0-based 커스텀 인덱스(없으면 undefined).
+ * registerBorderFill 과 같은 ctx.borderFills 배열 공유(순차 인덱스), dedupe 키만 `bfx:` 로 분리.
+ */
+function registerBorderFillEx(
+  ctx: BuildContext,
+  borders: [HwpBorderLine, HwpBorderLine, HwpBorderLine, HwpBorderLine] | null,
+  fillColor?: number
+): number | undefined {
+  if (!borders && fillColor === undefined) return undefined;
+  const b = borders ?? ([0, 0, 0, 0].map(() => ({ lineType: 0, widthIndex: 0, color: 0 })) as [
+    HwpBorderLine,
+    HwpBorderLine,
+    HwpBorderLine,
+    HwpBorderLine,
+  ]);
+  const key = `bfx:${b.map((x) => `${x.lineType}-${x.widthIndex}-${x.color}`).join(",")}:${fillColor ?? "n"}`;
+  const existing = ctx.borderFillIds.get(key);
+  if (existing !== undefined) return existing;
+  const id = ctx.borderFills.length;
+  ctx.borderFills.push({
+    attr: 0,
+    borders: [{ ...b[0] }, { ...b[1] }, { ...b[2] }, { ...b[3] }],
+    diagonal: { diagonalType: 0, widthIndex: 0, color: 0 },
+    fill: fillColor !== undefined ? { backgroundColor: fillColor, patternColor: 0, patternType: -1 } : undefined,
   });
   ctx.borderFillIds.set(key, id);
   return id;
