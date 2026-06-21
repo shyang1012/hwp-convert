@@ -192,3 +192,8 @@ test/fixtures/*
 # npm auth token — 절대 커밋 금지
 .npmrc
 **/.npmrc
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
