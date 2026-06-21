@@ -77,6 +77,10 @@ export interface HwpTableControl {
   rowCount: number;
   colCount: number;
   cells: HwpTableCell[];
+  /** 컬럼별 너비(HWPUNIT). 미설정 시 균등분할. div 다단 레이아웃 표가 grid-template-columns 반영 */
+  colWidths?: number[];
+  /** 테두리 없는 레이아웃 표(div grid/flex 합성). 미설정 시 일반 데이터 표(격자 테두리) */
+  borderless?: boolean;
 }
 
 export interface HwpTableCell {

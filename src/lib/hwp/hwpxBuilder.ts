@@ -809,12 +809,31 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
 const TABLE_BODY_WIDTH = 42520;
 const DEFAULT_ROW_HEIGHT = 2000; // 한글이 실제 높이를 재계산하므로 추정값으로 충분
 
+/**
+ * 컬럼별 너비 계산. raw(레이아웃 표 colWidths) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일
+ * (누적 반올림 오차는 마지막 컬럼 흡수). 없거나 부적합하면 기존 균등분할(데이터 표 무회귀).
+ */
+function computeTableColWidths(raw: number[] | undefined, colCount: number): number[] {
+  const equal = (): number[] =>
+    Array(colCount).fill(Math.max(1, Math.floor(TABLE_BODY_WIDTH / colCount)));
+  if (!raw || raw.length !== colCount) return equal();
+  const sum = raw.reduce((a, b) => a + b, 0);
+  if (sum <= 0) return equal();
+  const scaled = raw.map((w) => Math.max(1, Math.floor((w * TABLE_BODY_WIDTH) / sum)));
+  const used = scaled.reduce((a, b) => a + b, 0);
+  scaled[colCount - 1] = Math.max(1, scaled[colCount - 1] + (TABLE_BODY_WIDTH - used));
+  return scaled;
+}
+
 function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   const colCount = Math.max(1, t.colCount);
   const rowCount = Math.max(1, t.rowCount);
-  const cellW = Math.max(1, Math.floor(TABLE_BODY_WIDTH / colCount));
-  const tableW = cellW * colCount;
+  // 컬럼별 너비: t.colWidths(레이아웃 표) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일,
+  // 없으면(데이터 표) 기존 균등분할. 누적 반올림 오차는 마지막 컬럼에 흡수.
+  const colWidths = computeTableColWidths(t.colWidths, colCount);
+  const tableW = colWidths.reduce((a, b) => a + b, 0);
   const tableH = DEFAULT_ROW_HEIGHT * rowCount;
+  const defaultCellBf = t.borderless ? 1 : 2;
 
   const rows: HwpTableCell[][] = Array.from({ length: t.rowCount }, () => []);
   for (const cell of t.cells) {
@@ -835,13 +854,15 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
             .join("");
           const colSpan = Math.max(1, cell.colSpan);
           const rowSpan = Math.max(1, cell.rowSpan);
-          const cw = cellW * colSpan;
+          let cw = 0;
+          for (let k = 0; k < colSpan; k++) cw += colWidths[cell.col + k] ?? 0;
+          if (cw <= 0) cw = colWidths[0] ?? 1;
           const ch = DEFAULT_ROW_HEIGHT * rowSpan;
           const inner =
             cellInner ||
             `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"/>${DEFAULT_LINESEG}</hp:p>`;
           return (
-            `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${cell.borderFillId !== undefined ? cell.borderFillId + RESERVED_BORDERFILLS + 1 : 2}">` +
+            `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${cell.borderFillId !== undefined ? cell.borderFillId + RESERVED_BORDERFILLS + 1 : defaultCellBf}">` +
             `<hp:subList ${subListAttrs}>${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${cell.col}" rowAddr="${cell.row}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
@@ -858,7 +879,7 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   return (
     `<hp:tbl id="${makeParaId()}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" ` +
     `lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="1" rowCnt="${rowCount}" colCnt="${colCount}" ` +
-    `cellSpacing="0" borderFillIDRef="2" noAdjust="0">` +
+    `cellSpacing="0" borderFillIDRef="${t.borderless ? 1 : 2}" noAdjust="0">` +
     `<hp:sz width="${tableW}" widthRelTo="ABSOLUTE" height="${tableH}" heightRelTo="ABSOLUTE" protect="0"/>` +
     `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" ` +
     `vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +

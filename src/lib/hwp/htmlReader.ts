@@ -171,6 +171,43 @@ function parseInlineStyle(style: string | undefined): ParsedStyle {
   return out;
 }
 
+/** CSS 가로 다단 컨테이너 판정 결과. */
+interface LayoutStyle {
+  kind: "grid" | "flexRow";
+  /** grid-template-columns 의 컬럼별 px→HWPUNIT(px*75). 비px(fr/auto)은 null. grid 만. */
+  templateColsHwp?: (number | null)[];
+}
+
+/** 컨테이너 style 에서 display/flex-direction/grid-template-columns 를 파싱(parseInlineStyle 미파싱 영역). */
+function parseLayoutStyle(style: string | undefined): LayoutStyle | null {
+  if (!style) return null;
+  let display: string | undefined;
+  let flexDir: string | undefined;
+  let gridCols: string | undefined;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim().toLowerCase();
+    if (prop === "display") display = val;
+    else if (prop === "flex-direction") flexDir = val;
+    else if (prop === "grid-template-columns") gridCols = val;
+  }
+  if (display === "grid") {
+    const cols = gridCols ? gridCols.split(/\s+/).filter(Boolean) : [];
+    if (cols.length < 2) return null; // 다단 아님
+    const templateColsHwp = cols.map((c) => {
+      const m = /^([\d.]+)px$/.exec(c);
+      return m ? Math.round(parseFloat(m[1]) * 75) : null; // px→HWPUNIT, 비px 은 null
+    });
+    return { kind: "grid", templateColsHwp };
+  }
+  if (display === "flex" && (flexDir === undefined || flexDir === "row")) {
+    return { kind: "flexRow" };
+  }
+  return null;
+}
+
 export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDocument {
   const tree = parseToTree(html);
 
@@ -271,10 +308,17 @@ function renderNode(
 
   // 블록 레벨 태그 처리
   switch (tag) {
-    case "p":
     case "div":
     case "section":
-    case "article":
+    case "article": {
+      // CSS 가로 다단(display:grid / display:flex row + 블록 자식 ≥2)이면 좌우 배치 표로 합성(a2m).
+      const layout = parseLayoutStyle(node.attrs.style);
+      if (layout && isLayoutMultiColumn(node, layout)) {
+        return [collectDivColumnsAsParagraph(node, layout, ids, ctx, state)];
+      }
+      return renderNodeChildren(node, ids, ctx, state, prefix);
+    }
+    case "p":
       // 컨테이너: 자식이 모두 inline 이면 단일 문단, 블록(table/ul/p 등)이 섞이면
       // 각 블록 자식을 renderNode 로 재귀 처리한다. (중첩 table 평탄화 방지)
       return renderNodeChildren(node, ids, ctx, state, prefix);
@@ -533,6 +577,86 @@ function collectInlineControls(node: HtmlNode, ctx: BuildContext): HwpControl[] 
   };
   for (const c of node.children) visit(c);
   return out;
+}
+
+/** layout 컨테이너를 표로 변환할지 판정 — 블록 자식 ≥2 이고 의미있는 비블록 자식이 없을 때만(F-02 유실 방지). */
+function isLayoutMultiColumn(node: HtmlNode, layout: LayoutStyle): boolean {
+  const blockChildren = node.children.filter(
+    (c) => typeof c !== "string" && !isInlineTag(c.tag)
+  );
+  if (blockChildren.length < 2) return false;
+  // 공백 아닌 텍스트 / 인라인 요소 자식이 섞이면 변환 안 함 → renderNodeChildren 폴백으로 전부 보존
+  const hasMeaningfulInline = node.children.some((c) =>
+    typeof c === "string" ? collapseWhitespace(c).length > 0 : isInlineTag(c.tag)
+  );
+  if (hasMeaningfulInline) return false;
+  if (layout.kind === "grid" && (layout.templateColsHwp?.length ?? 0) < 2) return false;
+  return true;
+}
+
+/** grid-template-columns 가 모두 px 면 컬럼별 너비(HWPUNIT) 반환, 아니면 undefined(빌더가 균등분할). */
+function layoutColWidths(layout: LayoutStyle, cols: number): number[] | undefined {
+  const t = layout.templateColsHwp;
+  if (layout.kind === "grid" && t && t.length === cols && t.every((v) => v !== null && v > 0)) {
+    return t as number[];
+  }
+  return undefined;
+}
+
+/** div CSS 다단(grid/flex row) → 테두리 없는 1행/N열 레이아웃 표 합성. (a2m) */
+function collectDivColumnsAsParagraph(
+  container: HtmlNode,
+  layout: LayoutStyle,
+  ids: ShapeIds,
+  ctx: BuildContext,
+  state: InlineState
+): HwpParagraph {
+  const blockChildren = container.children.filter(
+    (c): c is HtmlNode => typeof c !== "string" && !isInlineTag(c.tag)
+  );
+  const cols = Math.max(
+    1,
+    layout.kind === "grid" ? layout.templateColsHwp?.length ?? blockChildren.length : blockChildren.length
+  );
+  const rows = Math.max(1, Math.ceil(blockChildren.length / cols));
+  const emptyPara = (): HwpParagraph => ({
+    paraShapeId: 0,
+    styleId: 0,
+    text: "",
+    runs: [],
+    controls: [],
+  });
+  const cells: HwpTableCell[] = [];
+  for (let idx = 0; idx < rows * cols; idx++) {
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+    const child = blockChildren[idx];
+    // F-01: renderNode(child) — child 가 또 layout 이면 중첩 표로, 아니면 renderNodeChildren 경로로 정규화.
+    const paragraphs = child ? renderNode(child, ids, ctx, state, "") : [];
+    cells.push({
+      col,
+      row,
+      colSpan: 1,
+      rowSpan: 1,
+      paragraphs: paragraphs.length > 0 ? paragraphs : [emptyPara()],
+    });
+  }
+  return {
+    paraShapeId: 0,
+    styleId: 0,
+    text: "",
+    runs: [],
+    controls: [
+      {
+        kind: "table",
+        rowCount: rows,
+        colCount: cols,
+        cells,
+        colWidths: layoutColWidths(layout, cols),
+        borderless: true,
+      },
+    ],
+  };
 }
 
 function collectTableParagraph(
