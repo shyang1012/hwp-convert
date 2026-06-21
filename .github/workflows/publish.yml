@@ -1,0 +1,33 @@
+name: Publish to npm (OIDC)
+
+# v* 태그가 push 되면 npm 에 자동 배포한다.
+# /배포 워크플로우가 main 머지 후 `npm version` 으로 v 태그를 만들어 push → 이 워크플로우 trigger.
+# npm Trusted Publisher(OIDC)로 토큰 없이 publish (provenance 포함).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # OIDC 토큰 발급 (Trusted Publisher)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      # OIDC Trusted Publisher 는 npm 11.5.1+ 필요
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # prepublishOnly(clean→build→test) 자동 실행. Trusted Publisher → NODE_AUTH_TOKEN 불필요.
+      - run: npm publish --provenance --access public

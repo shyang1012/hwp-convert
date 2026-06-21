@@ -77,6 +77,12 @@ export interface HwpTableControl {
   rowCount: number;
   colCount: number;
   cells: HwpTableCell[];
+  /** 컬럼별 너비(HWPUNIT). 미설정 시 균등분할. div 다단 레이아웃 표가 grid-template-columns 반영 */
+  colWidths?: number[];
+  /** 테두리 없는 레이아웃 표(div grid/flex 합성). 미설정 시 일반 데이터 표(격자 테두리) */
+  borderless?: boolean;
+  /** 셀 간격(HWPUNIT) — CSS grid gap. 미설정 시 0 */
+  cellSpacing?: number;
 }
 
 export interface HwpTableCell {
@@ -85,12 +91,22 @@ export interface HwpTableCell {
   colSpan: number;
   rowSpan: number;
   paragraphs: HwpParagraph[];
+  /** 셀 배경/테두리 — docInfo.borderFills 인덱스. 미설정 시 기본(0) */
+  borderFillId?: number;
+  /** 셀 안쪽 여백(HWPUNIT) — CSS padding. 미설정 시 빌더 기본 */
+  cellMargin?: { left: number; right: number; top: number; bottom: number };
+  /** 셀 세로 정렬 — CSS vertical-align. 미설정 시 빌더 기본(데이터셀 CENTER) */
+  vertAlign?: "TOP" | "CENTER" | "BOTTOM";
 }
 
 export interface HwpPictureControl {
   kind: "picture";
   /** DocInfo BIN_DATA 의 storageId */
   binDataId: number;
+  /** CSS 표시 너비 — px 또는 % (pct=true). 미설정 시 원본 px(축소만) */
+  width?: { v: number; pct: boolean };
+  /** CSS 표시 높이 — px 또는 %. 미설정 시 너비·원본 비율로 보완 */
+  height?: { v: number; pct: boolean };
 }
 
 export interface HwpHeaderControl {
@@ -222,6 +238,8 @@ export interface HwpCharShape {
   italic: boolean;
   underline: boolean;
   strikeout: boolean;
+  /** 글자 테두리 — docInfo.borderFills 인덱스(인라인 span border). 미설정 시 없음 */
+  borderFillId?: number;
 }
 
 export interface HwpParaShape {
@@ -240,6 +258,8 @@ export interface HwpParaShape {
   prevSpacing: number;
   nextSpacing: number;
   lineSpacing: number;
+  /** 문단 배경/테두리 — docInfo.borderFills 인덱스. 미설정 시 문단 채우기 없음 */
+  borderFillIDRef?: number;
 }
 
 export interface HwpStyle {

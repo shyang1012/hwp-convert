@@ -185,7 +185,8 @@ describe("Synthetic — BorderFill detail preservation", () => {
     const bytes = await buildHwpxFromDocument(doc);
     const zip = await JSZip.loadAsync(bytes);
     const header = await zip.file("Contents/header.xml")!.async("string");
-    expect(header).toContain('hh:winBrush faceColor="#D9D9D9"');
+    // 채우기 브러시는 core(hc:) 네임스페이스 — 한컴이 hh:fillBrush 는 무시(실측 검증).
+    expect(header).toContain('hc:winBrush faceColor="#D9D9D9"');
     expect(header).toContain('hatchStyle="NONE"');
   });
 });

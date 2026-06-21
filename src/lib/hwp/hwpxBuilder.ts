@@ -28,8 +28,9 @@ import type {
   HwpControl,
   HwpTableControl,
   HwpTableCell,
+  HwpPictureControl,
 } from "./types.js";
-import { detectImageMime } from "./binData.js";
+import { detectImageMime, imagePixelSize } from "./binData.js";
 import {
   MIMETYPE,
   OWPML_NS,
@@ -168,7 +169,8 @@ export async function buildHwpxFromDocument(
   // header.xml — DocInfo 기반 풀 빌드
   zip.file("Contents/header.xml", buildHeaderXmlFromDocInfo(doc.docInfo, doc.sections.length));
 
-  // 섹션
+  // 섹션 — lineseg 높이 계산에 쓰도록 charShapes 를 모듈 상태에 노출(문단 채우기 박스 높이 정합)
+  layoutCharShapes = doc.docInfo.charShapes ?? [];
   for (let i = 0; i < doc.sections.length; i++) {
     zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i].paragraphs, binEntries));
   }
@@ -270,12 +272,32 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
   );
 }
 
+/**
+ * borderFill id 는 한컴 규약상 1-based. 한컴 기본 파일을 그대로 모사:
+ *   id 1 = 테두리 NONE·채우기 없음 (charPr/일반 문단이 참조)
+ *   id 2 = 테두리 SOLID·채우기 없음 (표 격자 기본)
+ *   id 3+ = IR 의 커스텀 채우기 borderFill (블록/셀 배경)
+ * IR 커스텀 인덱스 k → 출력 id (k + RESERVED_BORDERFILLS + 1) = k + 3.
+ */
+const RESERVED_BORDERFILLS = 2;
+
 function buildBorderFillsXml(borderFills: HwpBorderFill[]): string {
-  const cnt = Math.max(1, borderFills.length);
-  const items: string[] = [];
-  for (let i = 0; i < cnt; i++) {
-    items.push(buildSingleBorderFillXml(i, borderFills[i]));
-  }
+  const none: HwpBorderFill = {
+    attr: 0,
+    borders: [
+      { lineType: 0, widthIndex: 0, color: 0 },
+      { lineType: 0, widthIndex: 0, color: 0 },
+      { lineType: 0, widthIndex: 0, color: 0 },
+      { lineType: 0, widthIndex: 0, color: 0 },
+    ],
+    diagonal: { diagonalType: 0, widthIndex: 0, color: 0 },
+  };
+  const items: string[] = [
+    buildSingleBorderFillXml(1, none), // id 1: NONE
+    buildSingleBorderFillXml(2, undefined), // id 2: SOLID(undefined 합성)
+  ];
+  borderFills.forEach((bf, k) => items.push(buildSingleBorderFillXml(k + RESERVED_BORDERFILLS + 1, bf)));
+  const cnt = RESERVED_BORDERFILLS + borderFills.length;
   return `<hh:borderFills itemCnt="${cnt}">${items.join("")}</hh:borderFills>`;
 }
 
@@ -328,10 +350,11 @@ function buildSingleBorderFillXml(id: number, bf?: HwpBorderFill): string {
   const hasDiag = slashKind !== 0 || backSlashKind !== 0;
   const diagonalEl = `<hh:diagonal type="${hasDiag ? "SOLID" : "NONE"}" width="${diagWidth}" color="${diagColor}"/>`;
 
+  // 채우기 브러시는 core(hc:) 네임스페이스. hh:fillBrush 는 한컴이 무시한다(테두리는 hh: 가 맞음).
   const fillEl = bf?.fill
-    ? `<hh:fillBrush>` +
-      `<hh:winBrush faceColor="${colorBgrToHex(bf.fill.backgroundColor)}" hatchColor="${colorBgrToHex(bf.fill.patternColor)}" hatchStyle="${bf.fill.patternType < 0 ? "NONE" : "HORIZONTAL"}" alpha="0"/>` +
-      `</hh:fillBrush>`
+    ? `<hc:fillBrush>` +
+      `<hc:winBrush faceColor="${colorBgrToHex(bf.fill.backgroundColor)}" hatchColor="${colorBgrToHex(bf.fill.patternColor)}" hatchStyle="${bf.fill.patternType < 0 ? "NONE" : "HORIZONTAL"}" alpha="0"/>` +
+      `</hc:fillBrush>`
     : "";
 
   return (
@@ -449,7 +472,7 @@ function buildCharPropertiesXml(charShapes: HwpCharShape[]): string {
     // 최소 1개 fallback
     return (
       `<hh:charProperties itemCnt="1">` +
-      `<hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="0">` +
+      `<hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">` +
       defaultFontGroupXml() +
       `</hh:charPr>` +
       `</hh:charProperties>`
@@ -478,9 +501,11 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
 
   const textColor = colorBgrToHex(cs.textColor);
   const shadeColor = cs.shadeColor === 0xffffff || cs.shadeColor === 0 ? "none" : colorBgrToHex(cs.shadeColor);
+  // 인라인 span border → 글자 테두리. 미설정은 기본 "1"(none).
+  const charBfRef = cs.borderFillId !== undefined ? cs.borderFillId + RESERVED_BORDERFILLS + 1 : 1;
 
   return (
-    `<hh:charPr id="${id}" height="${cs.baseSize}" textColor="${textColor}" shadeColor="${shadeColor}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="0">` +
+    `<hh:charPr id="${id}" height="${cs.baseSize}" textColor="${textColor}" shadeColor="${shadeColor}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="${charBfRef}">` +
     fontRef +
     ratio +
     spacing +
@@ -524,8 +549,18 @@ function buildParaPropertiesXml(paraShapes: HwpParaShape[]): string {
 
 function buildParaPrXml(id: number, ps: HwpParaShape): string {
   const align = alignToOwpml(ps.alignment);
+  // 색 채우기 문단만 borderFillIDRef(id≥3) 참조. 미설정은 생략(테두리/채우기 없음).
+  // IR 커스텀 인덱스(0-based) → 출력 id = k + RESERVED_BORDERFILLS + 1.
+  const emittedBf =
+    ps.borderFillIDRef !== undefined ? ps.borderFillIDRef + RESERVED_BORDERFILLS + 1 : undefined;
+  const bfRef = emittedBf !== undefined ? ` borderFillIDRef="${emittedBf}"` : "";
+  // 문단 배경/테두리는 paraPr 속성만으로는 한컴이 그리지 않는다 — <hh:border> 자식이 필요(실측 검증).
+  const borderChild =
+    emittedBf !== undefined
+      ? `<hh:border borderFillIDRef="${emittedBf}" offsetLeft="0" offsetRight="0" offsetTop="0" offsetBottom="0" connect="0" ignoreMargin="0"/>`
+      : "";
   return (
-    `<hh:paraPr id="${id}" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="0" suppressLineNumbers="0" checked="0">` +
+    `<hh:paraPr id="${id}" tabPrIDRef="0" condense="0" fontLineHeight="0" snapToGrid="0" suppressLineNumbers="0" checked="0"${bfRef}>` +
     `<hh:align horizontal="${align}" vertical="BASELINE"/>` +
     `<hh:heading type="NONE" idRef="0" level="0"/>` +
     `<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>` +
@@ -537,6 +572,7 @@ function buildParaPrXml(id: number, ps: HwpParaShape): string {
     `<hh:next value="${ps.nextSpacing}"/>` +
     `</hh:margin>` +
     `<hh:lineSpacing type="PERCENT" value="${Math.max(0, ps.lineSpacing)}"/>` +
+    borderChild +
     `</hh:paraPr>`
   );
 }
@@ -627,6 +663,31 @@ function buildSectionXml(paragraphs: HwpParagraph[], binEntries: BinEntry[]): st
   );
 }
 
+// 현재 빌드 중 문서의 charShapes — lineseg 높이 계산용(문단 채우기/테두리 박스가 글자를 감싸도록).
+let layoutCharShapes: HwpCharShape[] = [];
+
+/**
+ * 문단 라인세그를 글자 높이에 맞춰 생성. 채우기/테두리 박스 높이가 lineseg 를 따르므로,
+ * 큰 글자(제목 등)에서 박스가 글자보다 작아지지 않도록 한다. h=1000 이면 DEFAULT_LINESEG 와 동일.
+ */
+function buildLineSeg(maxHeight: number): string {
+  const h = Math.max(1000, Math.round(maxHeight));
+  const baseline = Math.round(h * 0.85);
+  const spacing = Math.round(h * 0.6);
+  return (
+    `<hp:linesegarray>` +
+    `<hp:lineseg textpos="0" vertpos="0" vertsize="${h}" textheight="${h}" baseline="${baseline}" spacing="${spacing}" horzpos="0" horzsize="42520" flags="393216"/>` +
+    `</hp:linesegarray>`
+  );
+}
+
+function paragraphMaxHeight(p: HwpParagraph): number {
+  return p.runs.reduce(
+    (m, r) => Math.max(m, layoutCharShapes[r.charShapeId]?.baseSize ?? 1000),
+    1000
+  );
+}
+
 function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
   const parts: string[] = [];
 
@@ -652,7 +713,7 @@ function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
   return (
     `<hp:p id="${makeParaId()}" paraPrIDRef="${p.paraShapeId}" styleIDRef="${p.styleId}" pageBreak="0" columnBreak="0" merged="0">` +
     parts.join("") +
-    DEFAULT_LINESEG +
+    buildLineSeg(paragraphMaxHeight(p)) +
     `</hp:p>`
   );
 }
@@ -669,9 +730,31 @@ const PIC_HEIGHT = 30000;
  * 한컴 정상 hp:pic 구조(etc/hwpjs_image_test 기준).
  * orgSz=curSz 1:1, 단위행렬 — 한글이 실제 크기를 재계산한다.
  */
-function buildPicXml(entry: BinEntry): string {
-  const w = PIC_WIDTH;
-  const h = PIC_HEIGHT;
+function buildPicXml(entry: BinEntry, ctrl?: HwpPictureControl): string {
+  const MAX_W = TABLE_BODY_WIDTH; // 본문 폭(42520)
+  const MAX_H = 70000; // ≈ A4 본문 높이
+  const nat = imagePixelSize(entry.data); // 원본 px (비율)
+  const ratio = nat && nat.w > 0 ? nat.h / nat.w : PIC_HEIGHT / PIC_WIDTH; // h/w
+  const resolve = (d: { v: number; pct: boolean }): number =>
+    Math.round(d.pct ? (d.v / 100) * MAX_W : d.v * 75);
+  let w: number | undefined = ctrl?.width ? resolve(ctrl.width) : undefined;
+  let h: number | undefined = ctrl?.height ? resolve(ctrl.height) : undefined;
+  if (w !== undefined && h === undefined) h = Math.round(w * ratio); // 비율 보완
+  else if (h !== undefined && w === undefined) w = Math.round(h / (ratio || 1));
+  if (w === undefined && h === undefined) {
+    if (nat && nat.w > 0 && nat.h > 0) {
+      const ow = nat.w * 75;
+      const oh = nat.h * 75;
+      const s = Math.min(1, MAX_W / ow, MAX_H / oh); // 축소만
+      w = Math.round(ow * s);
+      h = Math.round(oh * s);
+    } else {
+      w = PIC_WIDTH;
+      h = PIC_HEIGHT; // 폴백
+    }
+  }
+  w = Math.max(1, w ?? PIC_WIDTH);
+  h = Math.max(1, h ?? PIC_HEIGHT);
   return (
     `<hp:pic id="${makeParaId()}" zOrder="0" numberingType="PICTURE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" ` +
     `lock="0" dropcapstyle="None" href="" groupLevel="0" instid="${makeParaId()}" reverse="0">` +
@@ -706,7 +789,7 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
     case "picture": {
       const entry = binEntries.find((b) => b.id === `image${ctrl.binDataId}`);
       if (!entry) return "";
-      return `<hp:run charPrIDRef="0">${buildPicXml(entry)}</hp:run>`;
+      return `<hp:run charPrIDRef="0">${buildPicXml(entry, ctrl)}</hp:run>`;
     }
     case "shape": {
       // 도형: 1차 포팅에서는 placeholder. line 은 좌표만 보존.
@@ -751,12 +834,31 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
 const TABLE_BODY_WIDTH = 42520;
 const DEFAULT_ROW_HEIGHT = 2000; // 한글이 실제 높이를 재계산하므로 추정값으로 충분
 
+/**
+ * 컬럼별 너비 계산. raw(레이아웃 표 colWidths) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일
+ * (누적 반올림 오차는 마지막 컬럼 흡수). 없거나 부적합하면 기존 균등분할(데이터 표 무회귀).
+ */
+function computeTableColWidths(raw: number[] | undefined, colCount: number): number[] {
+  const equal = (): number[] =>
+    Array(colCount).fill(Math.max(1, Math.floor(TABLE_BODY_WIDTH / colCount)));
+  if (!raw || raw.length !== colCount) return equal();
+  const sum = raw.reduce((a, b) => a + b, 0);
+  if (sum <= 0) return equal();
+  const scaled = raw.map((w) => Math.max(1, Math.floor((w * TABLE_BODY_WIDTH) / sum)));
+  const used = scaled.reduce((a, b) => a + b, 0);
+  scaled[colCount - 1] = Math.max(1, scaled[colCount - 1] + (TABLE_BODY_WIDTH - used));
+  return scaled;
+}
+
 function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   const colCount = Math.max(1, t.colCount);
   const rowCount = Math.max(1, t.rowCount);
-  const cellW = Math.max(1, Math.floor(TABLE_BODY_WIDTH / colCount));
-  const tableW = cellW * colCount;
+  // 컬럼별 너비: t.colWidths(레이아웃 표) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일,
+  // 없으면(데이터 표) 기존 균등분할. 누적 반올림 오차는 마지막 컬럼에 흡수.
+  const colWidths = computeTableColWidths(t.colWidths, colCount);
+  const tableW = colWidths.reduce((a, b) => a + b, 0);
   const tableH = DEFAULT_ROW_HEIGHT * rowCount;
+  const defaultCellBf = t.borderless ? 1 : 2;
 
   const rows: HwpTableCell[][] = Array.from({ length: t.rowCount }, () => []);
   for (const cell of t.cells) {
@@ -764,9 +866,10 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   }
   for (const row of rows) row.sort((a, b) => a.col - b.col);
 
-  const subListAttrs =
-    `id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" ` +
+  const subListAttrs = (vAlign: string): string =>
+    `id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${vAlign}" ` +
     `linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0"`;
+  const cellSpacing = Math.max(0, t.cellSpacing ?? 0);
 
   const trXml = rows
     .map((row) => {
@@ -777,18 +880,21 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
             .join("");
           const colSpan = Math.max(1, cell.colSpan);
           const rowSpan = Math.max(1, cell.rowSpan);
-          const cw = cellW * colSpan;
+          let cw = 0;
+          for (let k = 0; k < colSpan; k++) cw += colWidths[cell.col + k] ?? 0;
+          if (cw <= 0) cw = colWidths[0] ?? 1;
           const ch = DEFAULT_ROW_HEIGHT * rowSpan;
           const inner =
             cellInner ||
             `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"/>${DEFAULT_LINESEG}</hp:p>`;
+          const m = cell.cellMargin ?? { left: 510, right: 510, top: 141, bottom: 141 };
           return (
-            `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="0">` +
-            `<hp:subList ${subListAttrs}>${inner}</hp:subList>` +
+            `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${cell.borderFillId !== undefined ? cell.borderFillId + RESERVED_BORDERFILLS + 1 : defaultCellBf}">` +
+            `<hp:subList ${subListAttrs(cell.vertAlign ?? "CENTER")}>${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${cell.col}" rowAddr="${cell.row}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
             `<hp:cellSz width="${cw}" height="${ch}"/>` +
-            `<hp:cellMargin left="510" right="510" top="141" bottom="141"/>` +
+            `<hp:cellMargin left="${m.left}" right="${m.right}" top="${m.top}" bottom="${m.bottom}"/>` +
             `</hp:tc>`
           );
         })
@@ -800,7 +906,7 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   return (
     `<hp:tbl id="${makeParaId()}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" ` +
     `lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="1" rowCnt="${rowCount}" colCnt="${colCount}" ` +
-    `cellSpacing="0" borderFillIDRef="0" noAdjust="0">` +
+    `cellSpacing="${cellSpacing}" borderFillIDRef="${t.borderless ? 1 : 2}" noAdjust="0">` +
     `<hp:sz width="${tableW}" widthRelTo="ABSOLUTE" height="${tableH}" heightRelTo="ABSOLUTE" protect="0"/>` +
     `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" ` +
     `vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +

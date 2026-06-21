@@ -1,6 +1,6 @@
 {
   "name": "hwp-convert",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "HWP/HWPX ↔ Markdown/HTML 변환 + 한컴(한글)에서 실제로 열리는 HWPX 생성. 순수 TypeScript, 브라우저/Node. 표·이미지·폰트·스타일 보존.",
   "license": "MIT",
   "type": "module",
