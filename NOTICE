@@ -1,0 +1,23 @@
+hwp-convert
+Copyright (c) 2026 shyang
+
+이 프로젝트는 아래 MIT 라이선스 저작물을 기반으로 fork·확장한 것입니다.
+
+1. hwpxjs (https://github.com/ssabro/hwpxjs)
+   Copyright (c) 2025 ssabro — MIT License
+   본 프로젝트의 원본. HWPX(OWPML) 읽기/쓰기, HWP→HWPX 변환, Markdown·HTML
+   양방향 변환의 골격을 제공.
+
+2. rhwp (https://github.com/edwardkim/rhwp)
+   Copyright (c) 2025-2026 Edward Kim — MIT License
+   HWP 5.0(CFB/OLE2) 바이너리 파서 구조의 원작(Rust). src/lib/hwp/ 의 파서는
+   이를 TypeScript 로 포팅한 것이며, 각 포팅 파일 헤더에 출처를 명시함.
+
+## hwp-convert 가 추가/변경한 것
+
+- 생성되는 HWPX 가 한컴오피스(한글)에서 실제로 열리도록 OWPML 컨벤션 정합
+  (mimetype, 속성 네임스페이스, secPr, 표 셀 구조 등 — docs/ 참고)
+- data URI + Node 로컬 파일(file://·경로) 이미지 임베드(imageResolver)
+- 변환 정합성 테스트(owpml-compat / e2e / image-resolver)
+
+원본·포팅 저작물의 저작권 고지와 MIT 라이선스 조건을 모두 유지합니다. 전문은 LICENSE 참조.

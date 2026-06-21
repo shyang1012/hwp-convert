@@ -1,0 +1,94 @@
+{
+  "name": "hwp-convert",
+  "version": "1.0.0",
+  "description": "HWP/HWPX ↔ Markdown/HTML 변환 + 한컴(한글)에서 실제로 열리는 HWPX 생성. 순수 TypeScript, 브라우저/Node. 표·이미지·폰트·스타일 보존.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "browser": "dist/browser/hwp-convert.browser.mjs",
+  "bin": {
+    "hwpconvert": "dist/cli.js",
+    "hwp-convert": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/browser/hwp-convert.browser.mjs",
+      "import": "./dist/index.js"
+    },
+    "./browser": "./dist/browser/hwp-convert.browser.mjs"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run build:browser",
+    "build:browser": "node scripts/build-browser.mjs",
+    "clean": "rimraf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run clean && npm run build && npm test"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "hwp",
+    "hwpx",
+    "hwp-convert",
+    "hwp-converter",
+    "hwpx-converter",
+    "convert",
+    "converter",
+    "OWPML",
+    "CFB",
+    "OLE2",
+    "한글",
+    "한컴",
+    "한글문서",
+    "한글변환",
+    "parser",
+    "document-conversion",
+    "markdown",
+    "html",
+    "korean",
+    "typescript",
+    "browser",
+    "esm"
+  ],
+  "author": "shyang <disroway@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shyang1012/hwp-convert.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shyang1012/hwp-convert/issues"
+  },
+  "homepage": "https://github.com/shyang1012/hwp-convert#readme",
+  "dependencies": {
+    "cfb": "^1.2.2",
+    "fast-xml-parser": "^5.2.5",
+    "htmlparser2": "^12.0.0",
+    "jszip": "^3.10.1",
+    "marked": "^18.0.2",
+    "pako": "^2.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/pako": "^2.0.3",
+    "esbuild": "^0.28.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.5"
+  }
+}
