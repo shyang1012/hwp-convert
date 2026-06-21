@@ -105,6 +105,23 @@ describe("HTML → HWPX", () => {
     expect(sec).toMatch(/rowSpan="2"/);
   });
 
+  it("preserves a table nested inside div/section wrappers", async () => {
+    // 실사용 폼 html(code-wiz form-document)은 표가 div>section>div 안에 깊이 중첩됨.
+    // 최상위 div 를 inline 평탄화하면 표가 소실되므로 블록 자식을 재귀 처리해야 한다.
+    const html = `<div data-testid="form"><section><div><table>` +
+      `<thead><tr><th>품목</th><th>수량</th></tr></thead>` +
+      `<tbody><tr><td>예시</td><td>1,000</td></tr></tbody>` +
+      `</table></div></section></div>`;
+    const bytes = await htmlToHwpx(html);
+    const zip = await JSZip.loadAsync(bytes);
+    const sec = await zip.file("Contents/section0.xml")!.async("string");
+    expect(sec).toContain("<hp:tbl");
+    const text = await readBackText(bytes);
+    expect(text).toContain("품목");
+    expect(text).toContain("예시");
+    expect(text).toContain("1,000");
+  });
+
   it("ignores script/style content", async () => {
     const html = `<style>body { color: red }</style><p>본문</p><script>alert(1)</script>`;
     const bytes = await htmlToHwpx(html);

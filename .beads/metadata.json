@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "hwp_convert",
+  "project_id": "3f4e9357-102d-413c-8480-a72061bcc609"
+}

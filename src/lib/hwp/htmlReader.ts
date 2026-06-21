@@ -85,6 +85,10 @@ interface BuildContext {
   binData: Map<number, { data: Uint8Array; extension: string }>;
   nextBinDataId: number;
   imageResolver?: ImageResolver;
+  // 동적 등록 대상 (색상/크기 charShape, 정렬 paraShape)
+  charShapes: HwpCharShape[];
+  paraShapes: HwpParaShape[];
+  paraShapeIds: Map<string, number>;
 }
 
 interface ShapeIds {
@@ -103,6 +107,64 @@ interface InlineState {
   bold: boolean;
   italic: boolean;
   mono: boolean;
+  textColor?: number; // HWP ColorRef (0xBBGGRR), undefined = 기본 검정
+  shadeColor?: number; // 배경색
+  baseSize?: number; // 글자 크기 (HWPUNIT, 1000 = 10pt)
+}
+
+/** 인라인 style 속성에서 색/크기/정렬을 파싱. */
+interface ParsedStyle {
+  textColor?: number;
+  shadeColor?: number;
+  baseSize?: number;
+  align?: HwpParaShape["alignment"];
+}
+
+function parseColorToHwp(v: string): number | undefined {
+  const s = v.trim().toLowerCase();
+  let r: number, g: number, b: number;
+  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(s);
+  if (rgb) {
+    r = +rgb[1]; g = +rgb[2]; b = +rgb[3];
+  } else {
+    const hex = /^#([0-9a-f]{6})$/.exec(s) || /^#([0-9a-f]{3})$/.exec(s);
+    if (!hex) return undefined;
+    const h = hex[1].length === 3 ? hex[1].replace(/(.)/g, "$1$1") : hex[1];
+    r = parseInt(h.slice(0, 2), 16);
+    g = parseInt(h.slice(2, 4), 16);
+    b = parseInt(h.slice(4, 6), 16);
+  }
+  // HWP ColorRef = 0xBBGGRR (colorBgrToHex 와 정합)
+  return (r & 0xff) | ((g & 0xff) << 8) | ((b & 0xff) << 16);
+}
+
+function parseInlineStyle(style: string | undefined): ParsedStyle {
+  const out: ParsedStyle = {};
+  if (!style) return out;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    if (prop === "color") out.textColor = parseColorToHwp(val);
+    else if (prop === "background-color" || prop === "background") {
+      const c = parseColorToHwp(val);
+      // 흰색 배경은 shade 없음으로 처리 (builder 가 none 출력)
+      if (c !== undefined && c !== 0xffffff) out.shadeColor = c;
+    } else if (prop === "font-size") {
+      const px = /([\d.]+)px/.exec(val);
+      const pt = /([\d.]+)pt/.exec(val);
+      if (px) out.baseSize = Math.round(parseFloat(px[1]) * 75); // px→pt(*0.75)→HWPUNIT(*100)
+      else if (pt) out.baseSize = Math.round(parseFloat(pt[1]) * 100);
+    } else if (prop === "text-align") {
+      const a = val.toLowerCase();
+      if (a === "left") out.align = "left";
+      else if (a === "right") out.align = "right";
+      else if (a === "center") out.align = "center";
+      else if (a === "justify") out.align = "justify";
+    }
+  }
+  return out;
 }
 
 export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDocument {
@@ -113,24 +175,25 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
     binData: new Map(),
     nextBinDataId: 1,
     imageResolver: options?.imageResolver,
+    charShapes: [defaultCharShape()],
+    paraShapes: [defaultParaShape()],
+    paraShapeIds: new Map([["default", 0]]),
   };
-
-  const charShapes: HwpCharShape[] = [defaultCharShape()];
   ctx.charShapeIds.set("default", 0);
 
   const ids: ShapeIds = {
     idDefault: 0,
-    idBold: registerCharShape(charShapes, ctx, { ...defaultCharShape(), bold: true }),
-    idItalic: registerCharShape(charShapes, ctx, { ...defaultCharShape(), italic: true }),
-    idBoldItalic: registerCharShape(charShapes, ctx, { ...defaultCharShape(), bold: true, italic: true }),
-    idMono: registerCharShape(charShapes, ctx, {
+    idBold: registerCharShape(ctx, { ...defaultCharShape(), bold: true }),
+    idItalic: registerCharShape(ctx, { ...defaultCharShape(), italic: true }),
+    idBoldItalic: registerCharShape(ctx, { ...defaultCharShape(), bold: true, italic: true }),
+    idMono: registerCharShape(ctx, {
       ...defaultCharShape(),
       faceNameIds: { hangul: 2, latin: 2, hanja: 2, japanese: 2, other: 2, symbol: 2, user: 2 },
     }),
-    idH1: registerCharShape(charShapes, ctx, { ...defaultCharShape(), bold: true, baseSize: 1800 }),
-    idH2: registerCharShape(charShapes, ctx, { ...defaultCharShape(), bold: true, baseSize: 1600 }),
-    idH3: registerCharShape(charShapes, ctx, { ...defaultCharShape(), bold: true, baseSize: 1400 }),
-    idHmin: registerCharShape(charShapes, ctx, { ...defaultCharShape(), bold: true, baseSize: 1200 }),
+    idH1: registerCharShape(ctx, { ...defaultCharShape(), bold: true, baseSize: 1800 }),
+    idH2: registerCharShape(ctx, { ...defaultCharShape(), bold: true, baseSize: 1600 }),
+    idH3: registerCharShape(ctx, { ...defaultCharShape(), bold: true, baseSize: 1400 }),
+    idHmin: registerCharShape(ctx, { ...defaultCharShape(), bold: true, baseSize: 1200 }),
   };
 
   const paragraphs: HwpParagraph[] = [];
@@ -157,8 +220,8 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
         [],
         [],
       ],
-      charShapes,
-      paraShapes: [defaultParaShape()],
+      charShapes: ctx.charShapes,
+      paraShapes: ctx.paraShapes,
       styles: [{ name: "바탕글", engName: "Normal", paraShapeId: 0, charShapeId: 0 }],
       binData: [],
       borderFills: [],
@@ -205,24 +268,10 @@ function renderNode(
     case "p":
     case "div":
     case "section":
-    case "article": {
-      const runs = collectInlineRuns(node, ids, ctx, state);
-      const text = runsToText(runs);
-      const controls = collectInlineControls(node, ctx);
-      if (text.length === 0 && controls.length === 0) return [];
-      return [
-        {
-          paraShapeId: 0,
-          styleId: 0,
-          text: prefix + text,
-          runs:
-            prefix.length > 0
-              ? [{ charShapeId: ids.idDefault, text: prefix }, ...runs]
-              : runs,
-          controls,
-        },
-      ];
-    }
+    case "article":
+      // 컨테이너: 자식이 모두 inline 이면 단일 문단, 블록(table/ul/p 등)이 섞이면
+      // 각 블록 자식을 renderNode 로 재귀 처리한다. (중첩 table 평탄화 방지)
+      return renderNodeChildren(node, ids, ctx, state, prefix);
     case "h1":
     case "h2":
     case "h3":
@@ -360,9 +409,10 @@ function renderNodeChildren(
     const text = runsToText(runs);
     const controls = collectInlineControls(node, ctx);
     if (!text && controls.length === 0) return [];
+    const align = parseInlineStyle(node.attrs.style).align;
     return [
       {
-        paraShapeId: 0,
+        paraShapeId: align ? registerParaShape(ctx, align) : 0,
         styleId: 0,
         text: prefix + text,
         runs:
@@ -415,7 +465,7 @@ function walkInline(
     const text = collapseWhitespace(node);
     if (text.length === 0) return;
     runs.push({
-      charShapeId: baseId !== null ? baseId : pickInlineId(ids, state),
+      charShapeId: baseId !== null ? baseId : resolveInlineCharShape(ids, ctx, state),
       text,
     });
     return;
@@ -425,18 +475,23 @@ function walkInline(
     // 이미지는 별도 컨트롤. 인라인에서는 alt 만 노출.
     const alt = node.attrs.alt;
     if (alt) {
-      runs.push({ charShapeId: pickInlineId(ids, state), text: alt });
+      runs.push({ charShapeId: resolveInlineCharShape(ids, ctx, state), text: alt });
     }
     return;
   }
   if (tag === "br") {
-    runs.push({ charShapeId: pickInlineId(ids, state), text: "\n" });
+    runs.push({ charShapeId: resolveInlineCharShape(ids, ctx, state), text: "\n" });
     return;
   }
   let nextState = state;
   if (tag === "strong" || tag === "b") nextState = { ...nextState, bold: true };
   if (tag === "em" || tag === "i") nextState = { ...nextState, italic: true };
   if (tag === "code" || tag === "samp" || tag === "kbd") nextState = { ...nextState, mono: true };
+  // inline style(color/background-color/font-size) 상속 누적
+  const st = parseInlineStyle(node.attrs.style);
+  if (st.textColor !== undefined) nextState = { ...nextState, textColor: st.textColor };
+  if (st.shadeColor !== undefined) nextState = { ...nextState, shadeColor: st.shadeColor };
+  if (st.baseSize !== undefined) nextState = { ...nextState, baseSize: st.baseSize };
   for (const child of node.children) {
     walkInline(child, ids, ctx, nextState, runs, baseId);
   }
@@ -506,8 +561,8 @@ function collectTableParagraph(
   }
 
   const cells: HwpTableCell[] = tcs.map(({ row, col, isHeader, node, colSpan, rowSpan }) => {
-    const baseId = isHeader ? ids.idBold : ids.idDefault;
-    const runs = collectInlineRuns(node, ids, ctx, { bold: isHeader, italic: false, mono: false }, baseId);
+    // baseId 를 고정하지 않고 state.bold 로 처리해야 셀의 inline style(색/크기)이 반영된다.
+    const runs = collectInlineRuns(node, ids, ctx, { bold: isHeader, italic: false, mono: false });
     return {
       col,
       row,
@@ -676,16 +731,48 @@ function defaultFileHeader(): HwpDocument["header"] {
   };
 }
 
-function registerCharShape(
-  shapes: HwpCharShape[],
-  ctx: BuildContext,
-  cs: HwpCharShape
-): number {
+function registerCharShape(ctx: BuildContext, cs: HwpCharShape): number {
   const key = JSON.stringify(cs);
   const existing = ctx.charShapeIds.get(key);
   if (existing !== undefined) return existing;
-  const id = shapes.length;
-  shapes.push(cs);
+  const id = ctx.charShapes.length;
+  ctx.charShapes.push(cs);
   ctx.charShapeIds.set(key, id);
   return id;
+}
+
+/** 정렬별 paraShape 동적 등록. */
+function registerParaShape(ctx: BuildContext, align: HwpParaShape["alignment"]): number {
+  if (align === "justify") return 0; // 기본(default)과 동일
+  const key = `align:${align}`;
+  const existing = ctx.paraShapeIds.get(key);
+  if (existing !== undefined) return existing;
+  const id = ctx.paraShapes.length;
+  ctx.paraShapes.push({ ...defaultParaShape(), alignment: align });
+  ctx.paraShapeIds.set(key, id);
+  return id;
+}
+
+/**
+ * InlineState(bold/italic/mono/color/size)에 해당하는 charShape id 를 반환.
+ * 색·크기 변형이 없으면 고정 ids, 있으면 동적 등록.
+ */
+function resolveInlineCharShape(ids: ShapeIds, ctx: BuildContext, state: InlineState): number {
+  if (
+    state.textColor === undefined &&
+    state.shadeColor === undefined &&
+    state.baseSize === undefined
+  ) {
+    return pickInlineId(ids, state);
+  }
+  const cs = defaultCharShape();
+  cs.bold = state.bold;
+  cs.italic = state.italic;
+  if (state.mono) {
+    cs.faceNameIds = { hangul: 2, latin: 2, hanja: 2, japanese: 2, other: 2, symbol: 2, user: 2 };
+  }
+  if (state.textColor !== undefined) cs.textColor = state.textColor;
+  if (state.shadeColor !== undefined) cs.shadeColor = state.shadeColor;
+  if (state.baseSize !== undefined) cs.baseSize = state.baseSize;
+  return registerCharShape(ctx, cs);
 }
