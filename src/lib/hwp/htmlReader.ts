@@ -205,24 +205,10 @@ function renderNode(
     case "p":
     case "div":
     case "section":
-    case "article": {
-      const runs = collectInlineRuns(node, ids, ctx, state);
-      const text = runsToText(runs);
-      const controls = collectInlineControls(node, ctx);
-      if (text.length === 0 && controls.length === 0) return [];
-      return [
-        {
-          paraShapeId: 0,
-          styleId: 0,
-          text: prefix + text,
-          runs:
-            prefix.length > 0
-              ? [{ charShapeId: ids.idDefault, text: prefix }, ...runs]
-              : runs,
-          controls,
-        },
-      ];
-    }
+    case "article":
+      // 컨테이너: 자식이 모두 inline 이면 단일 문단, 블록(table/ul/p 등)이 섞이면
+      // 각 블록 자식을 renderNode 로 재귀 처리한다. (중첩 table 평탄화 방지)
+      return renderNodeChildren(node, ids, ctx, state, prefix);
     case "h1":
     case "h2":
     case "h3":
