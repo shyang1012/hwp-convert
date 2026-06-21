@@ -168,7 +168,8 @@ export async function buildHwpxFromDocument(
   // header.xml — DocInfo 기반 풀 빌드
   zip.file("Contents/header.xml", buildHeaderXmlFromDocInfo(doc.docInfo, doc.sections.length));
 
-  // 섹션
+  // 섹션 — lineseg 높이 계산에 쓰도록 charShapes 를 모듈 상태에 노출(문단 채우기 박스 높이 정합)
+  layoutCharShapes = doc.docInfo.charShapes ?? [];
   for (let i = 0; i < doc.sections.length; i++) {
     zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i].paragraphs, binEntries));
   }
@@ -659,6 +660,31 @@ function buildSectionXml(paragraphs: HwpParagraph[], binEntries: BinEntry[]): st
   );
 }
 
+// 현재 빌드 중 문서의 charShapes — lineseg 높이 계산용(문단 채우기/테두리 박스가 글자를 감싸도록).
+let layoutCharShapes: HwpCharShape[] = [];
+
+/**
+ * 문단 라인세그를 글자 높이에 맞춰 생성. 채우기/테두리 박스 높이가 lineseg 를 따르므로,
+ * 큰 글자(제목 등)에서 박스가 글자보다 작아지지 않도록 한다. h=1000 이면 DEFAULT_LINESEG 와 동일.
+ */
+function buildLineSeg(maxHeight: number): string {
+  const h = Math.max(1000, Math.round(maxHeight));
+  const baseline = Math.round(h * 0.85);
+  const spacing = Math.round(h * 0.6);
+  return (
+    `<hp:linesegarray>` +
+    `<hp:lineseg textpos="0" vertpos="0" vertsize="${h}" textheight="${h}" baseline="${baseline}" spacing="${spacing}" horzpos="0" horzsize="42520" flags="393216"/>` +
+    `</hp:linesegarray>`
+  );
+}
+
+function paragraphMaxHeight(p: HwpParagraph): number {
+  return p.runs.reduce(
+    (m, r) => Math.max(m, layoutCharShapes[r.charShapeId]?.baseSize ?? 1000),
+    1000
+  );
+}
+
 function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
   const parts: string[] = [];
 
@@ -684,7 +710,7 @@ function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
   return (
     `<hp:p id="${makeParaId()}" paraPrIDRef="${p.paraShapeId}" styleIDRef="${p.styleId}" pageBreak="0" columnBreak="0" merged="0">` +
     parts.join("") +
-    DEFAULT_LINESEG +
+    buildLineSeg(paragraphMaxHeight(p)) +
     `</hp:p>`
   );
 }

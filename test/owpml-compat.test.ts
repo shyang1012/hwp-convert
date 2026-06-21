@@ -202,4 +202,14 @@ describe("OWPML borderFill 배경 채우기 (igp)", () => {
     // 한컴은 paraPr 속성만으론 문단 채우기를 안 그린다 — <hh:border> 자식이 있어야 렌더됨(실측 검증).
     expect(header).toMatch(new RegExp(`<hh:border borderFillIDRef="${refId}"`));
   });
+
+  it("큰 글자 문단의 lineseg 높이가 글자 height 를 반영한다 (채우기 박스가 글자를 감싼다)", async () => {
+    // 채우기/테두리 박스 높이는 lineseg 를 따른다. 30px(=baseSize 2250) 글자의 문단 lineseg
+    // textheight 가 기본 1000 이 아니라 2250 이어야 박스가 글자보다 작아지지 않는다.
+    const zip = await zipOf(
+      await htmlToHwpx(`<div style="background-color: rgb(26,82,118); font-size: 30px">발주서</div>`)
+    );
+    const sec = await zip.file("Contents/section0.xml")!.async("string");
+    expect(sec).toMatch(/<hp:lineseg[^>]*vertsize="2250"[^>]*textheight="2250"/);
+  });
 });
