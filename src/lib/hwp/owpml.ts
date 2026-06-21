@@ -14,6 +14,8 @@
  * [shyang 2026-06-21]
  */
 
+import type { HwpPageDef } from "./types.js";
+
 /** mimetype 파일 내용 — 한글이 HWPX 를 감지하는 매직 문자열. */
 export const MIMETYPE = "application/hwp+zip";
 
@@ -42,38 +44,59 @@ export const DEFAULT_LINESEG =
   `</hp:linesegarray>`;
 
 /**
- * 섹션 첫 문단에 들어가는 <hp:secPr>(페이지 설정) + <hp:ctrl><hp:colPr> 블록.
- * 한컴 정상 샘플(etc/hwpxcore_test/Contents/section0.xml) 기준 A4 세로.
- * 한글이 열 때 실제 레이아웃을 재계산하므로 이 기본값으로 충분.
+ * 섹션 첫 문단에 들어가는 <hp:secPr>(페이지 설정) + <hp:ctrl><hp:colPr> 블록 생성.
+ *
+ * pageDef 가 있으면 용지(width/height)·여백(margin)을 그 값으로 출력하고,
+ * 없으면 한컴 A4 세로 기본 프리셋(etc/hwpxcore_test/Contents/section0.xml 기준).
+ * 그 외(grid/startNum/visibility/각주·미주/페이지테두리/colPr)는 현행 고정 — 한글이 열 때 재계산.
+ * landscape 속성은 1차 보존 범위 밖이라 항상 "WIDELY"(가로/세로는 width<height 로 자연 표현).
  */
-export const SEC_PR_XML =
-  `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0">` +
-  `<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>` +
-  `<hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/>` +
-  `<hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>` +
-  `<hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/>` +
-  `<hp:pagePr landscape="WIDELY" width="59528" height="84186" gutterType="LEFT_ONLY">` +
-  `<hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/>` +
-  `</hp:pagePr>` +
-  `<hp:footNotePr>` +
-  `<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>` +
-  `<hp:noteLine length="-1" type="SOLID" width="0.12 mm" color="#000000"/>` +
-  `<hp:noteSpacing betweenNotes="283" belowLine="567" aboveLine="850"/>` +
-  `<hp:numbering type="CONTINUOUS" newNum="1"/>` +
-  `<hp:placement place="EACH_COLUMN" beneathText="0"/>` +
-  `</hp:footNotePr>` +
-  `<hp:endNotePr>` +
-  `<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>` +
-  `<hp:noteLine length="14692344" type="SOLID" width="0.12 mm" color="#000000"/>` +
-  `<hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/>` +
-  `<hp:numbering type="CONTINUOUS" newNum="1"/>` +
-  `<hp:placement place="END_OF_DOCUMENT" beneathText="0"/>` +
-  `</hp:endNotePr>` +
-  `<hp:pageBorderFill type="BOTH" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>` +
-  `<hp:pageBorderFill type="EVEN" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>` +
-  `<hp:pageBorderFill type="ODD" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>` +
-  `</hp:secPr>` +
-  `<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>`;
+export function buildSecPr(pageDef?: HwpPageDef): string {
+  const width = pageDef ? pageDef.width : 59528;
+  const height = pageDef ? pageDef.height : 84186;
+  const left = pageDef ? pageDef.left : 8504;
+  const right = pageDef ? pageDef.right : 8504;
+  const top = pageDef ? pageDef.top : 5668;
+  const bottom = pageDef ? pageDef.bottom : 4252;
+  const header = pageDef ? pageDef.header : 4252;
+  const footer = pageDef ? pageDef.footer : 4252;
+  const gutter = pageDef ? pageDef.gutter : 0;
+  return (
+    `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0">` +
+    `<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>` +
+    `<hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/>` +
+    `<hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>` +
+    `<hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/>` +
+    `<hp:pagePr landscape="WIDELY" width="${width}" height="${height}" gutterType="LEFT_ONLY">` +
+    `<hp:margin header="${header}" footer="${footer}" gutter="${gutter}" left="${left}" right="${right}" top="${top}" bottom="${bottom}"/>` +
+    `</hp:pagePr>` +
+    `<hp:footNotePr>` +
+    `<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>` +
+    `<hp:noteLine length="-1" type="SOLID" width="0.12 mm" color="#000000"/>` +
+    `<hp:noteSpacing betweenNotes="283" belowLine="567" aboveLine="850"/>` +
+    `<hp:numbering type="CONTINUOUS" newNum="1"/>` +
+    `<hp:placement place="EACH_COLUMN" beneathText="0"/>` +
+    `</hp:footNotePr>` +
+    `<hp:endNotePr>` +
+    `<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>` +
+    `<hp:noteLine length="14692344" type="SOLID" width="0.12 mm" color="#000000"/>` +
+    `<hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/>` +
+    `<hp:numbering type="CONTINUOUS" newNum="1"/>` +
+    `<hp:placement place="END_OF_DOCUMENT" beneathText="0"/>` +
+    `</hp:endNotePr>` +
+    `<hp:pageBorderFill type="BOTH" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>` +
+    `<hp:pageBorderFill type="EVEN" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>` +
+    `<hp:pageBorderFill type="ODD" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>` +
+    `</hp:secPr>` +
+    `<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>`
+  );
+}
+
+/**
+ * 하위호환 기본 secPr(페이지 설정 없는 경로 — 평문 writer.ts 등).
+ * `buildSecPr()` 무인자 호출과 바이트 동일 → 기존 import·회귀 테스트 유지.
+ */
+export const SEC_PR_XML = buildSecPr();
 
 let paraIdCounter = 0;
 

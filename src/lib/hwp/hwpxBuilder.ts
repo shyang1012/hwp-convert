@@ -24,6 +24,7 @@ import type {
   HwpBullet,
   HwpTabDef,
   HwpParagraph,
+  HwpSection,
   HwpRun,
   HwpControl,
   HwpTableControl,
@@ -35,7 +36,7 @@ import {
   MIMETYPE,
   OWPML_NS,
   DEFAULT_LINESEG,
-  SEC_PR_XML,
+  buildSecPr,
   makeParaId,
   escapeXml,
 } from "./owpml.js";
@@ -172,7 +173,7 @@ export async function buildHwpxFromDocument(
   // 섹션 — lineseg 높이 계산에 쓰도록 charShapes 를 모듈 상태에 노출(문단 채우기 박스 높이 정합)
   layoutCharShapes = doc.docInfo.charShapes ?? [];
   for (let i = 0; i < doc.sections.length; i++) {
-    zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i].paragraphs, binEntries));
+    zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries));
   }
 
   // BinData
@@ -629,13 +630,15 @@ function alignToOwpml(a: HwpParaShape["alignment"]): string {
 // section.xml 빌드
 // ============================================================
 
-function buildSectionXml(paragraphs: HwpParagraph[], binEntries: BinEntry[]): string {
+function buildSectionXml(section: HwpSection, binEntries: BinEntry[]): string {
+  const paragraphs = section.paragraphs;
   // 본 문단 + 머리말/꼬리말/각주 인라인 보강
   const parts: string[] = [];
-  // 섹션 첫 문단에 secPr(페이지 설정) — 한컴이 섹션을 구성하는 데 필수
+  // 섹션 첫 문단에 secPr(페이지 설정) — 한컴이 섹션을 구성하는 데 필수.
+  // section.pageDef 가 있으면 원본 용지/여백 보존, 없으면 기본값 폴백.
   parts.push(
     `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">` +
-      `<hp:run charPrIDRef="0">${SEC_PR_XML}</hp:run>` +
+      `<hp:run charPrIDRef="0">${buildSecPr(section.pageDef)}</hp:run>` +
       `<hp:run charPrIDRef="0"><hp:t/></hp:run>` +
       DEFAULT_LINESEG +
       `</hp:p>`
@@ -825,6 +828,7 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
     case "footer":
     case "footnote":
     case "field":
+    case "sectionDef": // secPr 은 섹션 첫 문단에서 별도 합성 — 본문 중복 출력 금지
     case "unknown":
       return "";
   }

@@ -26,7 +26,7 @@ import {
   HWPTAG_CTRL_HEADER,
 } from "./tags.js";
 import { parseCtrlHeader } from "./control.js";
-import type { HwpControl, HwpParagraph, HwpRun, HwpSection } from "./types.js";
+import type { HwpControl, HwpPageDef, HwpParagraph, HwpRun, HwpSection } from "./types.js";
 
 export class BodyTextError extends Error {
   constructor(msg: string) {
@@ -39,7 +39,20 @@ export function parseBodyTextSection(data: Uint8Array): HwpSection {
   const records = readAllRecords(data);
   // 섹션의 최상위 PARA_HEADER 들 (보통 level=0)
   const topLevel = records.length > 0 ? records[0].level : 0;
-  return { paragraphs: parseParagraphList(records, topLevel) };
+  const paragraphs = parseParagraphList(records, topLevel);
+  // 섹션 페이지 설정: secd 컨트롤(보통 첫 문단)의 PAGE_DEF. 없으면 undefined → 빌더 기본값 폴백.
+  const pageDef = extractPageDef(paragraphs);
+  return pageDef ? { paragraphs, pageDef } : { paragraphs };
+}
+
+/** 문단들의 컨트롤 중 첫 sectionDef 의 pageDef 를 추출 (섹션당 secd 1개, 보통 첫 문단). */
+function extractPageDef(paragraphs: HwpParagraph[]): HwpPageDef | undefined {
+  for (const p of paragraphs) {
+    for (const c of p.controls) {
+      if (c.kind === "sectionDef") return c.pageDef;
+    }
+  }
+  return undefined;
 }
 
 /**
