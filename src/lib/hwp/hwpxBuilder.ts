@@ -841,9 +841,10 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   }
   for (const row of rows) row.sort((a, b) => a.col - b.col);
 
-  const subListAttrs =
-    `id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" ` +
+  const subListAttrs = (vAlign: string): string =>
+    `id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${vAlign}" ` +
     `linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0"`;
+  const cellSpacing = Math.max(0, t.cellSpacing ?? 0);
 
   const trXml = rows
     .map((row) => {
@@ -861,13 +862,14 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
           const inner =
             cellInner ||
             `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"/>${DEFAULT_LINESEG}</hp:p>`;
+          const m = cell.cellMargin ?? { left: 510, right: 510, top: 141, bottom: 141 };
           return (
             `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${cell.borderFillId !== undefined ? cell.borderFillId + RESERVED_BORDERFILLS + 1 : defaultCellBf}">` +
-            `<hp:subList ${subListAttrs}>${inner}</hp:subList>` +
+            `<hp:subList ${subListAttrs(cell.vertAlign ?? "CENTER")}>${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${cell.col}" rowAddr="${cell.row}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
             `<hp:cellSz width="${cw}" height="${ch}"/>` +
-            `<hp:cellMargin left="510" right="510" top="141" bottom="141"/>` +
+            `<hp:cellMargin left="${m.left}" right="${m.right}" top="${m.top}" bottom="${m.bottom}"/>` +
             `</hp:tc>`
           );
         })
@@ -879,7 +881,7 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   return (
     `<hp:tbl id="${makeParaId()}" zOrder="0" numberingType="TABLE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" ` +
     `lock="0" dropcapstyle="None" pageBreak="CELL" repeatHeader="1" rowCnt="${rowCount}" colCnt="${colCount}" ` +
-    `cellSpacing="0" borderFillIDRef="${t.borderless ? 1 : 2}" noAdjust="0">` +
+    `cellSpacing="${cellSpacing}" borderFillIDRef="${t.borderless ? 1 : 2}" noAdjust="0">` +
     `<hp:sz width="${tableW}" widthRelTo="ABSOLUTE" height="${tableH}" heightRelTo="ABSOLUTE" protect="0"/>` +
     `<hp:pos treatAsChar="1" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" ` +
     `vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +

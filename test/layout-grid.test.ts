@@ -185,3 +185,50 @@ describe("CSS border 반영 — 셀 테두리(borderFill)", () => {
     expect(bf).toContain('faceColor="#0000FF"'); // 채우기
   });
 });
+
+describe("HTML 레이아웃 마감 — padding / gap / vertical-align", () => {
+  it("padding:9px → 셀 cellMargin 675(=9*75 HWPUNIT)", async () => {
+    const sec = await sectionOf(
+      `<div style="display:grid; grid-template-columns:100px 100px"><div style="padding:9px">A</div><div>B</div></div>`
+    );
+    expect(sec).toContain('<hp:cellMargin left="675" right="675" top="675" bottom="675"/>');
+  });
+
+  it("padding 단축 2값(세로 가로)도 면별로 반영", async () => {
+    const sec = await sectionOf(
+      `<div style="display:grid; grid-template-columns:100px 100px"><div style="padding:6px 9px">A</div><div>B</div></div>`
+    );
+    // top/bottom=6px(450), left/right=9px(675)
+    expect(sec).toContain('<hp:cellMargin left="675" right="675" top="450" bottom="450"/>');
+  });
+
+  it("grid gap:9px → 표 cellSpacing 675", async () => {
+    const sec = await sectionOf(
+      `<div style="display:grid; grid-template-columns:100px 100px; gap:9px"><div>A</div><div>B</div></div>`
+    );
+    expect(sec).toMatch(/<hp:tbl[^>]*cellSpacing="675"/);
+  });
+
+  it("레이아웃 셀 기본 세로정렬 TOP (H-02)", async () => {
+    const sec = await sectionOf(
+      `<div style="display:grid; grid-template-columns:50px 50px"><div>A</div><div>B</div></div>`
+    );
+    expect(sec).toMatch(/vertAlign="TOP"/);
+    expect(sec).not.toMatch(/vertAlign="CENTER"/);
+  });
+
+  it("데이터 표 td padding/vertical-align 반영", async () => {
+    const sec = await sectionOf(
+      `<table><tr><td style="padding:4.5px; vertical-align:bottom">x</td></tr></table>`
+    );
+    expect(sec).toContain('<hp:cellMargin left="338" right="338" top="338" bottom="338"/>'); // 4.5*75=337.5→338
+    expect(sec).toMatch(/vertAlign="BOTTOM"/);
+  });
+
+  it("무회귀: 마감 미지정 데이터 표는 기존 리터럴 유지(cellMargin 510/141, vertAlign CENTER, cellSpacing 0)", async () => {
+    const sec = await sectionOf(`<table><tr><td>x</td></tr></table>`);
+    expect(sec).toContain('<hp:cellMargin left="510" right="510" top="141" bottom="141"/>');
+    expect(sec).toMatch(/vertAlign="CENTER"/);
+    expect(sec).toMatch(/<hp:tbl[^>]*cellSpacing="0"/);
+  });
+});

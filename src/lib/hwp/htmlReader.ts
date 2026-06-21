@@ -123,6 +123,12 @@ interface ParsedStyle {
   shadeColor?: number;
   baseSize?: number;
   align?: HwpParaShape["alignment"];
+  vAlign?: "TOP" | "CENTER" | "BOTTOM";
+}
+
+/** CSS px → HWPUNIT (1/7200 인치): 1px(1/96 인치) = 75 HWPUNIT. */
+function pxToHwpUnit(px: number): number {
+  return Math.round(px * 75);
 }
 
 function parseColorToHwp(v: string): number | undefined {
@@ -167,9 +173,47 @@ function parseInlineStyle(style: string | undefined): ParsedStyle {
       else if (a === "right") out.align = "right";
       else if (a === "center") out.align = "center";
       else if (a === "justify") out.align = "justify";
+    } else if (prop === "vertical-align") {
+      const v = val.toLowerCase();
+      if (v === "top") out.vAlign = "TOP";
+      else if (v === "middle") out.vAlign = "CENTER";
+      else if (v === "bottom") out.vAlign = "BOTTOM";
+      // baseline/sub/super 등은 미설정(빌더 기본)
     }
   }
   return out;
+}
+
+/** CSS padding(단축 1~4값 / padding-{side}) → 4면 HWPUNIT. 없으면 undefined. */
+function parsePadding(
+  style: string | undefined
+): { left: number; right: number; top: number; bottom: number } | undefined {
+  if (!style) return undefined;
+  const px = (v: string): number | undefined => {
+    const m = /^([\d.]+)px$/.exec(v.trim());
+    if (m) return pxToHwpUnit(parseFloat(m[1]));
+    return /^0$/.test(v.trim()) ? 0 : undefined;
+  };
+  let top: number | undefined, right: number | undefined, bottom: number | undefined, left: number | undefined;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    if (prop === "padding") {
+      const t = val.split(/\s+/).map(px);
+      // CSS 단축: 1값=전면, 2값=세로/가로, 3값=상/가로/하, 4값=상우하좌
+      if (t.length === 1) [top, right, bottom, left] = [t[0], t[0], t[0], t[0]];
+      else if (t.length === 2) [top, right, bottom, left] = [t[0], t[1], t[0], t[1]];
+      else if (t.length === 3) [top, right, bottom, left] = [t[0], t[1], t[2], t[1]];
+      else if (t.length >= 4) [top, right, bottom, left] = [t[0], t[1], t[2], t[3]];
+    } else if (prop === "padding-top") top = px(val);
+    else if (prop === "padding-right") right = px(val);
+    else if (prop === "padding-bottom") bottom = px(val);
+    else if (prop === "padding-left") left = px(val);
+  }
+  if (top === undefined && right === undefined && bottom === undefined && left === undefined) return undefined;
+  return { left: left ?? 0, right: right ?? 0, top: top ?? 0, bottom: bottom ?? 0 };
 }
 
 /** CSS 가로 다단 컨테이너 판정 결과. */
@@ -177,6 +221,8 @@ interface LayoutStyle {
   kind: "grid" | "flexRow";
   /** grid-template-columns 의 컬럼별 px→HWPUNIT(px*75). 비px(fr/auto)은 null. grid 만. */
   templateColsHwp?: (number | null)[];
+  /** 칼럼 간격(HWPUNIT) — CSS gap/column-gap 의 컬럼 간격 px → px*75. */
+  gapHwp?: number;
 }
 
 /** 컨테이너 style 에서 display/flex-direction/grid-template-columns 를 파싱(parseInlineStyle 미파싱 영역). */
@@ -185,6 +231,14 @@ function parseLayoutStyle(style: string | undefined): LayoutStyle | null {
   let display: string | undefined;
   let flexDir: string | undefined;
   let gridCols: string | undefined;
+  let gapHwp: number | undefined;
+  const colGapPx = (v: string): number | undefined => {
+    // gap: <row> <col> (단일이면 양쪽 동일). 칼럼 간격 = 2번째 토큰 ?? 1번째.
+    const toks = v.split(/\s+/).filter(Boolean);
+    const t = toks[1] ?? toks[0];
+    const m = t ? /^([\d.]+)px$/.exec(t) : null;
+    return m ? pxToHwpUnit(parseFloat(m[1])) : undefined;
+  };
   for (const decl of style.split(";")) {
     const i = decl.indexOf(":");
     if (i < 0) continue;
@@ -193,6 +247,8 @@ function parseLayoutStyle(style: string | undefined): LayoutStyle | null {
     if (prop === "display") display = val;
     else if (prop === "flex-direction") flexDir = val;
     else if (prop === "grid-template-columns") gridCols = val;
+    else if (prop === "gap") gapHwp = colGapPx(val);
+    else if (prop === "column-gap") gapHwp = colGapPx(val);
   }
   if (display === "grid") {
     const cols = gridCols ? gridCols.split(/\s+/).filter(Boolean) : [];
@@ -201,10 +257,10 @@ function parseLayoutStyle(style: string | undefined): LayoutStyle | null {
       const m = /^([\d.]+)px$/.exec(c);
       return m ? Math.round(parseFloat(m[1]) * 75) : null; // px→HWPUNIT, 비px 은 null
     });
-    return { kind: "grid", templateColsHwp };
+    return { kind: "grid", templateColsHwp, gapHwp };
   }
   if (display === "flex" && (flexDir === undefined || flexDir === "row")) {
-    return { kind: "flexRow" };
+    return { kind: "flexRow", gapHwp };
   }
   return null;
 }
@@ -756,12 +812,17 @@ function collectDivColumnsAsParagraph(
     const borderFillId = border.hasBorder
       ? registerBorderFillEx(ctx, border.borders, undefined)
       : undefined;
+    // 마감: padding→cellMargin, vertical-align→vertAlign(H-02: 레이아웃 셀 기본 TOP).
+    const cellMargin = child ? parsePadding(child.attrs.style) : undefined;
+    const vertAlign = (child ? parseInlineStyle(child.attrs.style).vAlign : undefined) ?? "TOP";
     cells.push({
       col,
       row,
       colSpan: 1,
       rowSpan: 1,
       borderFillId,
+      cellMargin,
+      vertAlign,
       paragraphs: paragraphs.length > 0 ? paragraphs : [emptyPara()],
     });
   }
@@ -778,6 +839,7 @@ function collectDivColumnsAsParagraph(
         cells,
         colWidths: layoutColWidths(layout, cols),
         borderless: true,
+        cellSpacing: layout.gapHwp,
       },
     ],
   };
@@ -841,12 +903,17 @@ function collectTableParagraph(
     if (cb.hasBorder) borderFillId = registerBorderFillEx(ctx, cb.borders, cellBg);
     else if (cellBg !== undefined) borderFillId = registerBorderFill(ctx, cellBg, true); // 격자+채우기 유지
     else borderFillId = undefined;
+    // 마감: padding→cellMargin, vertical-align→vertAlign(데이터 셀은 미지정 시 빌더 기본 CENTER).
+    const cellMargin = parsePadding(node.attrs.style);
+    const vertAlign = parseInlineStyle(node.attrs.style).vAlign;
     return {
       col,
       row,
       colSpan,
       rowSpan,
       borderFillId,
+      cellMargin,
+      vertAlign,
       paragraphs: [
         {
           paraShapeId: 0,

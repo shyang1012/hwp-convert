@@ -81,6 +81,8 @@ export interface HwpTableControl {
   colWidths?: number[];
   /** 테두리 없는 레이아웃 표(div grid/flex 합성). 미설정 시 일반 데이터 표(격자 테두리) */
   borderless?: boolean;
+  /** 셀 간격(HWPUNIT) — CSS grid gap. 미설정 시 0 */
+  cellSpacing?: number;
 }
 
 export interface HwpTableCell {
@@ -91,6 +93,10 @@ export interface HwpTableCell {
   paragraphs: HwpParagraph[];
   /** 셀 배경/테두리 — docInfo.borderFills 인덱스. 미설정 시 기본(0) */
   borderFillId?: number;
+  /** 셀 안쪽 여백(HWPUNIT) — CSS padding. 미설정 시 빌더 기본 */
+  cellMargin?: { left: number; right: number; top: number; bottom: number };
+  /** 셀 세로 정렬 — CSS vertical-align. 미설정 시 빌더 기본(데이터셀 CENTER) */
+  vertAlign?: "TOP" | "CENTER" | "BOTTOM";
 }
 
 export interface HwpPictureControl {
