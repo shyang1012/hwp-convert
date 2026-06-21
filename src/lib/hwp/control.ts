@@ -15,6 +15,8 @@ import {
   CTRL_FOOTER,
   CTRL_FOOTNOTE,
   CTRL_EQUATION,
+  CTRL_SECTION_DEF,
+  HWPTAG_PAGE_DEF,
   HWPTAG_TABLE,
   HWPTAG_LIST_HEADER,
   HWPTAG_SHAPE_COMPONENT,
@@ -31,6 +33,7 @@ import {
 } from "./tags.js";
 import type {
   HwpControl,
+  HwpPageDef,
   HwpParagraph,
   HwpTableCell,
 } from "./types.js";
@@ -78,6 +81,8 @@ export function parseCtrlHeader(
       };
     case CTRL_EQUATION:
       return parseEquationControl(ctrlHeader, children);
+    case CTRL_SECTION_DEF:
+      return parseSectionDefControl(children);
     default:
       if (isFieldCtrlId(ctrlIdRaw)) {
         return parseFieldControl(ctrlIdRaw, ctrlData);
@@ -301,6 +306,57 @@ function parsePictureBinDataId(data: Uint8Array): number | undefined {
   if (data.byteLength < OFFSET + 2) return undefined;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return view.getUint16(OFFSET, true);
+}
+
+// ============================================================
+// 섹션 정의 (secd) — 페이지 설정
+// ============================================================
+
+function parseSectionDefControl(children: Record[]): HwpControl {
+  // secd 자식 중 PAGE_DEF 레코드를 찾아 페이지 설정을 디코드.
+  for (const r of children) {
+    if (r.tagId === HWPTAG_PAGE_DEF) {
+      return { kind: "sectionDef", pageDef: parsePageDef(r.data) };
+    }
+  }
+  return { kind: "unknown", ctrlId: "secd" };
+}
+
+/**
+ * HWPTAG_PAGE_DEF 디코드 — 용지/여백/방향.
+ * 레이아웃 (u32 LE 순차 10개):
+ *   width, height, margin_left, margin_right, margin_top, margin_bottom,
+ *   margin_header, margin_footer, margin_gutter, attr.
+ * landscape = attr bit0. 치수는 HWPUNIT (OWPML 과 동일 단위).
+ * 폴백 기본값은 한컴 A4 세로 기본 프리셋.
+ *
+ * 원작: rhwp/src/parser/body_text.rs::parse_page_def (MIT, Edward Kim)
+ */
+function parsePageDef(data: Uint8Array): HwpPageDef {
+  const r = new ByteReader(data);
+  const u = (fallback: number) => (r.remaining() >= 4 ? r.readU32() : fallback);
+  const width = u(59528);
+  const height = u(84188);
+  const left = u(8504);
+  const right = u(8504);
+  const top = u(5669);
+  const bottom = u(4252);
+  const header = u(4252);
+  const footer = u(4252);
+  const gutter = u(0);
+  const attr = u(0);
+  return {
+    width,
+    height,
+    left,
+    right,
+    top,
+    bottom,
+    header,
+    footer,
+    gutter,
+    landscape: (attr & 1) !== 0,
+  };
 }
 
 // ============================================================

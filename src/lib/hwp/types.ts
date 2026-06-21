@@ -37,6 +37,29 @@ export interface HwpParagraph {
 
 export interface HwpSection {
   paragraphs: HwpParagraph[];
+  /** 섹션 페이지 설정(용지/여백/방향). secd→PAGE_DEF 에서 추출. 미설정 시 빌더 기본값 폴백 */
+  pageDef?: HwpPageDef;
+}
+
+/**
+ * 섹션 페이지 설정 — HWP `secd` 컨트롤 자식 `HWPTAG_PAGE_DEF` 레코드에서 추출.
+ * 모든 치수는 HWPUNIT(1/7200 inch) — OWPML `pagePr`/`margin` 과 동일 단위라 변환 없이 매핑.
+ */
+export interface HwpPageDef {
+  /** 용지 가로/세로 크기 */
+  width: number;
+  height: number;
+  /** 본문 여백 */
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  /** 머리말/꼬리말/제본 여백 */
+  header: number;
+  footer: number;
+  gutter: number;
+  /** attr bit0 — 가로 방향. (1차 보존 범위: IR 에만 기록, 빌더는 width/height 로 자연 표현) */
+  landscape: boolean;
 }
 
 // ============================================================
@@ -52,7 +75,14 @@ export type HwpControl =
   | HwpFieldControl
   | HwpShapeControl
   | HwpEquationControl
+  | HwpSectionDefControl
   | HwpUnknownControl;
+
+export interface HwpSectionDefControl {
+  kind: "sectionDef";
+  /** secd 자식 PAGE_DEF 에서 디코드한 페이지 설정 */
+  pageDef: HwpPageDef;
+}
 
 export interface HwpShapeControl {
   kind: "shape";
