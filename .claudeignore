@@ -1,0 +1,11 @@
+# Claude 가 읽지 않을 민감/비밀 파일
+.npmrc
+**/.npmrc
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.keystore
+secrets.*
+**/secrets.*

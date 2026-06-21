@@ -188,3 +188,7 @@ NPM_PUBLISH_GUIDE.md
 test/fixtures/*
 !test/fixtures/e2emd.md
 !test/fixtures/e2emd_img.md
+
+# npm auth token — 절대 커밋 금지
+.npmrc
+**/.npmrc
