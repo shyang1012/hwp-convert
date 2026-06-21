@@ -27,7 +27,8 @@ jobs:
       # OIDC Trusted Publisher 는 npm 11.5.1+ 필요
       - run: npm install -g npm@latest
 
-      - run: npm ci
+      # package-lock.json 은 .gitignore(라이브러리) — npm ci 대신 npm install
+      - run: npm install
 
       # prepublishOnly(clean→build→test) 자동 실행. Trusted Publisher → NODE_AUTH_TOKEN 불필요.
       - run: npm publish --provenance --access public
