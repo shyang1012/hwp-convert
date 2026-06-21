@@ -81,9 +81,10 @@ debug-*.js
 *.tar.gz
 
 # Claude Code specific
-# 프로젝트 커스텀 커맨드(.claude/commands)는 팀 공유 위해 커밋, 나머지(로컬 설정·시크릿)는 제외
+# 프로젝트 커스텀 커맨드(.claude/commands)·메모리 포인터(.claude/MEMORY.md)는 팀 공유 위해 커밋, 나머지(로컬 설정·시크릿)는 제외
 .claude/*
 !.claude/commands/
+!.claude/MEMORY.md
 .claude/commands/*.local.md
 
 # Runtime data
