@@ -500,9 +500,11 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
 
   const textColor = colorBgrToHex(cs.textColor);
   const shadeColor = cs.shadeColor === 0xffffff || cs.shadeColor === 0 ? "none" : colorBgrToHex(cs.shadeColor);
+  // 인라인 span border → 글자 테두리. 미설정은 기본 "1"(none).
+  const charBfRef = cs.borderFillId !== undefined ? cs.borderFillId + RESERVED_BORDERFILLS + 1 : 1;
 
   return (
-    `<hh:charPr id="${id}" height="${cs.baseSize}" textColor="${textColor}" shadeColor="${shadeColor}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">` +
+    `<hh:charPr id="${id}" height="${cs.baseSize}" textColor="${textColor}" shadeColor="${shadeColor}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="${charBfRef}">` +
     fontRef +
     ratio +
     spacing +

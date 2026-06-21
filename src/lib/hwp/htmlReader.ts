@@ -115,6 +115,7 @@ interface InlineState {
   textColor?: number; // HWP ColorRef (0xBBGGRR), undefined = 기본 검정
   shadeColor?: number; // 배경색
   baseSize?: number; // 글자 크기 (HWPUNIT, 1000 = 10pt)
+  borderFillId?: number; // 인라인 span border → 글자 테두리(docInfo.borderFills 인덱스)
 }
 
 /** 인라인 style 속성에서 색/크기/정렬을 파싱. */
@@ -420,9 +421,13 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
     paragraphs.push(...renderNode(child, ids, ctx, initialState, ""));
   }
 
-  // 빈 paragraph 제거
+  // 빈 paragraph 제거. 단 테두리 있는 run(도장박스 placeholder)이 있으면 보존 —
+  // text.trim() 은 전각공백을 지우므로 placeholder 만 있는 문단이 사라지는 것을 막는다.
   const filtered = paragraphs.filter(
-    (p) => p.text.trim().length > 0 || p.controls.length > 0
+    (p) =>
+      p.text.trim().length > 0 ||
+      p.controls.length > 0 ||
+      p.runs.some((r) => ctx.charShapes[r.charShapeId]?.borderFillId !== undefined)
   );
 
   return {
@@ -733,8 +738,19 @@ function walkInline(
   // 블록(div/p/td 등)의 배경은 문단/셀 borderFill 로 분기되므로 글자 음영으로 새지 않게 한다.
   if (st.shadeColor !== undefined && isInlineTag(tag)) nextState = { ...nextState, shadeColor: st.shadeColor };
   if (st.baseSize !== undefined) nextState = { ...nextState, baseSize: st.baseSize };
+  // 인라인 요소(span 등)의 border → 글자 테두리(도장박스). 자식 run 에 실린다.
+  const ib = isInlineTag(tag) ? parseBorderStyle(node.attrs.style) : { hasBorder: false, borders: null };
+  if (ib.hasBorder) {
+    const bfId = registerBorderFillEx(ctx, ib.borders, undefined);
+    if (bfId !== undefined) nextState = { ...nextState, borderFillId: bfId };
+  }
+  const before = runs.length;
   for (const child of node.children) {
     walkInline(child, ids, ctx, nextState, runs, baseId);
+  }
+  // 빈 bordered 요소(도장박스: 텍스트 0) → placeholder run 으로 박스 가시화.
+  if (ib.hasBorder && runs.length === before) {
+    runs.push({ charShapeId: resolveInlineCharShape(ids, ctx, nextState), text: "　　" });
   }
 }
 
@@ -1163,7 +1179,8 @@ function resolveInlineCharShape(ids: ShapeIds, ctx: BuildContext, state: InlineS
   if (
     state.textColor === undefined &&
     state.shadeColor === undefined &&
-    state.baseSize === undefined
+    state.baseSize === undefined &&
+    state.borderFillId === undefined
   ) {
     return pickInlineId(ids, state);
   }
@@ -1176,5 +1193,6 @@ function resolveInlineCharShape(ids: ShapeIds, ctx: BuildContext, state: InlineS
   if (state.textColor !== undefined) cs.textColor = state.textColor;
   if (state.shadeColor !== undefined) cs.shadeColor = state.shadeColor;
   if (state.baseSize !== undefined) cs.baseSize = state.baseSize;
+  if (state.borderFillId !== undefined) cs.borderFillId = state.borderFillId;
   return registerCharShape(ctx, cs);
 }

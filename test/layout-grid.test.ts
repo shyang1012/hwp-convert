@@ -232,3 +232,28 @@ describe("HTML 레이아웃 마감 — padding / gap / vertical-align", () => {
     expect(sec).toMatch(/<hp:tbl[^>]*cellSpacing="0"/);
   });
 });
+
+describe("도장박스 — inline span border → char 테두리 (#4)", () => {
+  it("빈 bordered span → run charShape 테두리(borderFillIDRef≥3) + 문단 보존", async () => {
+    const { header, section } = await hs(`<span style="border:1px solid rgb(209,213,220)"></span>`);
+    const refs = [...header.matchAll(/<hh:charPr[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    const bordered = refs.find((r) => r >= 3);
+    expect(bordered).toBeDefined(); // 테두리 있는 charPr 존재(빈 문단 필터에 안 지워짐)
+    const bf = borderFillOf(header, bordered!);
+    expect(bf).toContain('<hh:leftBorder type="SOLID"');
+    expect(bf).toContain('color="#D1D5DC"');
+    expect(section).toContain("　"); // placeholder(전각공백) run 보존
+  });
+
+  it("텍스트 있는 bordered span → 그 run charPr 에 테두리", async () => {
+    const { header } = await hs(`<p><span style="border:1px solid rgb(0,0,0)">인</span></p>`);
+    const refs = [...header.matchAll(/<hh:charPr[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(refs.some((r) => r >= 3)).toBe(true);
+  });
+
+  it("무회귀: 테두리 없는 일반 텍스트는 charPr borderFillIDRef=1 유지", async () => {
+    const { header } = await hs(`<p>일반 텍스트</p>`);
+    const refs = [...header.matchAll(/<hh:charPr[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(refs.every((r) => r === 1)).toBe(true);
+  });
+});

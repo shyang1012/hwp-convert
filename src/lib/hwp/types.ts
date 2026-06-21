@@ -234,6 +234,8 @@ export interface HwpCharShape {
   italic: boolean;
   underline: boolean;
   strikeout: boolean;
+  /** 글자 테두리 — docInfo.borderFills 인덱스(인라인 span border). 미설정 시 없음 */
+  borderFillId?: number;
 }
 
 export interface HwpParaShape {
