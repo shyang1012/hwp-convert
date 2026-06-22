@@ -100,8 +100,8 @@ bd create --type <type> --title "..."
 2. **배포 결정** — PM 이 배포를 결정하면:
    1. **e2e 테스트 신설/갱신** — 이번 변경의 대표 경로(critical path)를 `test/e2e.test.ts` 에 추가/갱신. 미신설 시 PL 은 배포 진입 차단(또는 PM 명시 carry).
    2. **전체 검증** — `npm run build && npm test`(109+ 통과) + 변환 산출물 한컴 열림 확인(hwp MCP, 가능 시).
-   3. **PR 생성** — `dev` → `main` PR (`gh pr create --base main --head dev`). 변경 요약·검증 결과·e2e 범위 기재.
-   4. **머지 후 배포** — main 머지 → `npm version <patch|minor|major>` → `npm publish`(prepublishOnly 가 clean→build→test 자동 실행). publish 는 PM 승인 하 실행, **2FA 우회 Automation 토큰 필요**.
+   3. **버전 bump(dev) + PR 생성** — 🔴 버전 bump 는 **머지 전 dev 에서** (`npm version <patch|minor|major> --no-git-tag-version` → commit → push). main 은 보호(PR 필수+`enforce_admins`)라 버전 커밋 직접 push 불가 → dev 에서 bump 해야 PR 이 버전을 main 으로 실어 나르고 드리프트가 없다. 이어 `dev` → `main` PR (`gh pr create --base main --head dev`), 변경 요약·검증·e2e 범위 기재.
+   4. **머지 후 태그 publish** — main 머지 → `git tag v<버전> origin/main && git push origin v<버전>`. 태그 push 가 `publish.yml`(OIDC Trusted Publisher) 트리거 → 토큰리스 npm publish(provenance, prepublishOnly clean→build→test 자동). 🔴 main 에 커밋 push 금지(태그만). backsync 불필요(dev 가 이미 bump됨).
 
 ### E2E Test Standards
 
