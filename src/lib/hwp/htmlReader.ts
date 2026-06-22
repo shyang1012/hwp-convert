@@ -877,6 +877,11 @@ function collectTableParagraph(
   };
   collectTrs(table);
 
+  // 표 기본 테두리 정책(docx-convert 미러링): CSS border 가 전혀 없는 <table> 은 무테(셀 default=NONE).
+  // <table style="border:…"> 처럼 표레벨 border 가 명시되면 비-borderless 로 두어 기본 격자(id 2)를 유지한다.
+  // (collectTableParagraph 는 td/th style 만 해석하므로 표레벨 border 는 여기서만 판정한다.)
+  const tableBorder = parseBorderStyle(table.attrs.style);
+
   // rowspan/colspan 점유 그리드로 실제 셀 좌표(colAddr/rowAddr)를 계산한다.
   // 단순히 셀마다 col 을 1 증가시키면 병합 셀이 점유한 칸을 무시해 좌표가 어긋난다.
   let maxCols = 0;
@@ -917,7 +922,7 @@ function collectTableParagraph(
     const cb = parseBorderStyle(node.attrs.style);
     let borderFillId: number | undefined;
     if (cb.hasBorder) borderFillId = registerBorderFillEx(ctx, cb.borders, cellBg);
-    else if (cellBg !== undefined) borderFillId = registerBorderFill(ctx, cellBg, true); // 격자+채우기 유지
+    else if (cellBg !== undefined) borderFillId = registerBorderFill(ctx, cellBg, false); // 채우기만(테두리 없음): CSS border 미명시 → 무테(docx-convert 미러링)
     else borderFillId = undefined;
     // 마감: padding→cellMargin, vertical-align→vertAlign(데이터 셀은 미지정 시 빌더 기본 CENTER).
     const cellMargin = parsePadding(node.attrs.style);
@@ -947,7 +952,9 @@ function collectTableParagraph(
     styleId: 0,
     text: "",
     runs: [],
-    controls: [{ kind: "table", rowCount: trs.length, colCount: maxCols, cells }],
+    controls: [
+      { kind: "table", rowCount: trs.length, colCount: maxCols, cells, borderless: !tableBorder.hasBorder },
+    ],
   };
 }
 
