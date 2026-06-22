@@ -175,14 +175,86 @@ describe("CSS border 반영 — 셀 테두리(borderFill)", () => {
     expect(borderFillOf(header, ref)).toContain('color="#E5E7EB"');
   });
 
-  it("PR-01 회귀: 배경만 있는 td(테두리 명시 없음)는 검정 격자 유지 + 채우기", async () => {
+  it("배경만 있는 td(테두리 명시 없음)는 무테 + 채우기 (docx-convert 미러링, 격자 미생성)", async () => {
     const { header, section } = await hs(
       `<table><tr><td style="background-color: rgb(0,0,255)">x</td></tr></table>`
     );
     const ref = Number(/<hp:tc[^>]*borderFillIDRef="(\d+)"/.exec(section)![1]);
     const bf = borderFillOf(header, ref);
-    expect(bf).toContain('<hh:leftBorder type="SOLID" width="0.1 mm" color="#000000"/>'); // 격자 유지
-    expect(bf).toContain('faceColor="#0000FF"'); // 채우기
+    expect(bf).toContain('<hh:leftBorder type="NONE"'); // border CSS 없음 → 무테
+    expect(bf).not.toContain('<hh:leftBorder type="SOLID"'); // 격자 없음
+    expect(bf).toContain('faceColor="#0000FF"'); // 채우기는 유지
+  });
+});
+
+describe("HTML <table> 무테 셀 기본 격자 제거 (docx-convert 미러링, hwp-convert-aio)", () => {
+  it("border CSS 없는 <table> → tbl·모든 셀 borderFillIDRef=1 (무테)", async () => {
+    const sec = await sectionOf(`<table><tr><td>A</td><td>B</td></tr></table>`);
+    expect(sec).toMatch(/<hp:tbl[^>]*borderFillIDRef="1"/);
+    const refs = [...sec.matchAll(/<hp:tc[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(refs.length).toBe(2);
+    expect(refs.every((r) => r === 1)).toBe(true);
+  });
+
+  it("F-01 회귀: 표레벨 전용 border(<table style=border>) → tbl borderFillIDRef=2 유지(무테화 안 됨)", async () => {
+    const sec = await sectionOf(
+      `<table style="border:1px solid rgb(0,0,0)"><tr><td>x</td></tr></table>`
+    );
+    expect(sec).toMatch(/<hp:tbl[^>]*borderFillIDRef="2"/);
+  });
+
+  it("mixed-cell: border 있는 셀은 보존, 없는 셀은 무테(1)", async () => {
+    const { header, section } = await hs(
+      `<table><tr><td style="border-right:1px solid rgb(0,0,0)">A</td><td>B</td></tr></table>`
+    );
+    const refs = [...section.matchAll(/<hp:tc[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(refs.length).toBe(2);
+    expect(refs[0]).toBeGreaterThanOrEqual(3); // border 있는 셀 = 커스텀 borderFill
+    expect(borderFillOf(header, refs[0])).toContain('<hh:rightBorder type="SOLID"');
+    expect(refs[1]).toBe(1); // border 없는 셀 = 무테
+  });
+});
+
+describe("div↔table 변환 동등성 — 셀 테두리만 비교 (배경/정렬 책임 차이는 비교 대상 외)", () => {
+  // 셀의 4면 border type 만 추출(채우기·정렬 등은 의도적으로 비교하지 않음 — F-02).
+  const cellBorderTypes = (header: string, section: string): string[][] => {
+    const refs = [...section.matchAll(/<hp:tc[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    return refs.map((r) => {
+      if (r === 1) return ["NONE", "NONE", "NONE", "NONE"]; // 예약 id1 = 무테
+      const bf = borderFillOf(header, r);
+      return [...bf.matchAll(/<hh:(?:left|right|top|bottom)Border type="(\w+)"/g)].map((m) => m[1]);
+    });
+  };
+
+  it("무테 등가: grid div 2칸 == <table> 1행2열 → 양쪽 셀 테두리 NONE", async () => {
+    const div = await hs(
+      `<div style="display:grid; grid-template-columns:50px 50px"><div>A</div><div>B</div></div>`
+    );
+    const tbl = await hs(`<table><tr><td>A</td><td>B</td></tr></table>`);
+    const dt = cellBorderTypes(div.header, div.section);
+    const tt = cellBorderTypes(tbl.header, tbl.section);
+    expect(dt).toEqual(tt);
+    expect(dt.flat().every((t) => t === "NONE")).toBe(true);
+  });
+
+  it("명시 border 등가: 동일 border CSS → 양쪽 셀 테두리 SOLID·동색", async () => {
+    const css = "border:1px solid rgb(0,0,0)";
+    const div = await hs(
+      `<div style="display:grid; grid-template-columns:50px 50px"><div style="${css}">A</div><div style="${css}">B</div></div>`
+    );
+    const tbl = await hs(`<table><tr><td style="${css}">A</td><td style="${css}">B</td></tr></table>`);
+    const dRef = Number(/<hp:tc[^>]*borderFillIDRef="(\d+)"/.exec(div.section)![1]);
+    const tRef = Number(/<hp:tc[^>]*borderFillIDRef="(\d+)"/.exec(tbl.section)![1]);
+    const dBf = borderFillOf(div.header, dRef);
+    const tBf = borderFillOf(tbl.header, tRef);
+    // 4면 type 일치
+    const types = (bf: string) =>
+      [...bf.matchAll(/<hh:(?:left|right|top|bottom)Border type="(\w+)"/g)].map((m) => m[1]);
+    expect(types(dBf)).toEqual(types(tBf));
+    expect(types(dBf).every((t) => t === "SOLID")).toBe(true);
+    // 색 일치
+    const color = (bf: string) => /<hh:leftBorder[^>]*color="(#[0-9A-F]+)"/.exec(bf)?.[1];
+    expect(color(dBf)).toBe(color(tBf));
   });
 });
 
