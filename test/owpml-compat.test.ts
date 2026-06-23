@@ -213,3 +213,40 @@ describe("OWPML borderFill 배경 채우기 (igp)", () => {
     expect(sec).toMatch(/<hp:lineseg[^>]*vertsize="2250"[^>]*textheight="2250"/);
   });
 });
+
+describe("긴 문단 줄바꿈: linesegarray 분기 (fitsOneLine)", () => {
+  // 단일 lineseg 는 1줄일 때만 정확. 한 줄 초과 문단은 linesegarray 를 생략해 한글이
+  // 줄바꿈을 재계산(검은 띠 겹침 방지). 1줄 문단은 유지(채우기 박스 높이 보존).
+  const longKo =
+    "4차산업혁명 시대 포스트 코로나 시대에 정보화 시스템은 개발자가 규칙을 규정하여 데이터를 처리하는 방법에서 개발자가 데이터를 입력하여 데이터 처리규칙을 도출하는 시대로 나아가고 있습니다";
+
+  /** 첫 본문 문단(secPr 홀더 제외)의 hp:p 추출. */
+  function bodyParas(sec: string): string[] {
+    return (sec.match(/<hp:p\b[\s\S]*?<\/hp:p>/g) || []).filter((p) => !p.includes("<hp:secPr"));
+  }
+
+  it("긴 산문 <p>(채우기 없음, 1줄 초과) → linesegarray 미출력", async () => {
+    const zip = await zipOf(await htmlToHwpx(`<p>${longKo}</p>`));
+    const sec = await zip.file("Contents/section0.xml")!.async("string");
+    const target = bodyParas(sec).find((p) => p.includes("4차산업혁명"))!;
+    expect(target).toBeTruthy();
+    expect(target).not.toContain("<hp:linesegarray>");
+  });
+
+  it("F-01: 긴 배경색 블록 div(채우기 + 1줄 초과) → linesegarray 미출력(재겹침 방지)", async () => {
+    const zip = await zipOf(
+      await htmlToHwpx(`<div style="background-color: rgb(26,82,118)">${longKo}</div>`)
+    );
+    const sec = await zip.file("Contents/section0.xml")!.async("string");
+    const target = bodyParas(sec).find((p) => p.includes("4차산업혁명"))!;
+    expect(target).toBeTruthy();
+    expect(target).not.toContain("<hp:linesegarray>");
+  });
+
+  it("짧은 평문 문단(1줄) → linesegarray 유지", async () => {
+    const zip = await zipOf(await htmlToHwpx(`<p>짧은 한 줄 문단</p>`));
+    const sec = await zip.file("Contents/section0.xml")!.async("string");
+    const target = bodyParas(sec).find((p) => p.includes("짧은 한 줄"))!;
+    expect(target).toContain("<hp:linesegarray>");
+  });
+});

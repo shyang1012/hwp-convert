@@ -728,6 +728,45 @@ function paragraphMaxHeight(p: HwpParagraph): number {
   );
 }
 
+/**
+ * 전각(2바이트 폭) 글자 근사 — 한글/CJK/가나/전각기호. fitsOneLine 폭 추정 전용(렌더 정밀 아님).
+ */
+function isWideChar(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // 한글 자모
+    (cp >= 0x2e80 && cp <= 0xa4cf) || // CJK 부수~한중일 통합~Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // 한글 음절
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK 호환 한자
+    (cp >= 0xff00 && cp <= 0xff60) || // 전각 영숫자/기호
+    (cp >= 0xffe0 && cp <= 0xffe6)
+  );
+}
+
+/**
+ * 문단 텍스트가 본문 한 줄에 들어가는지(보수적) — 단일 lineseg 안전 판정.
+ * 단일 lineseg 는 1줄일 때만 정확(겹침은 줄바꿈 시 발생). 한 줄 초과 가능 문단은
+ * linesegarray 를 생략해 한글이 줄바꿈을 재계산하게 한다(검은 띠 방지).
+ * 글자 폭 ≈ 전각=baseSize, 반각=baseSize/2. 합이 본문폭(여유 0.95) 이하면 1줄로 간주.
+ */
+function fitsOneLine(p: HwpParagraph): boolean {
+  const limit = TABLE_BODY_WIDTH * 0.95;
+  let w = 0;
+  const measure = (text: string, charShapeId: number): boolean => {
+    const base = layoutCharShapes[charShapeId]?.baseSize ?? 1000;
+    for (const ch of text) {
+      w += isWideChar(ch.codePointAt(0) ?? 0) ? base : base * 0.5;
+      if (w > limit) return false;
+    }
+    return true;
+  };
+  if (p.runs.length > 0) {
+    for (const r of p.runs) if (!measure(r.text, r.charShapeId)) return false;
+  } else {
+    if (!measure(p.text, 0)) return false;
+  }
+  return w <= limit;
+}
+
 function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
   const parts: string[] = [];
 
@@ -753,7 +792,9 @@ function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
   return (
     `<hp:p id="${makeParaId()}" paraPrIDRef="${p.paraShapeId}" styleIDRef="${p.styleId}" pageBreak="0" columnBreak="0" merged="0">` +
     parts.join("") +
-    buildLineSeg(paragraphMaxHeight(p)) +
+    // 1줄에 들어가는 문단만 단일 lineseg(채우기/테두리 박스 높이 보존). 한 줄 초과 가능 문단은
+    // linesegarray 생략 → 한글이 줄바꿈 재계산(긴 산문·긴 배경색 문단의 검은 띠 겹침 방지).
+    (fitsOneLine(p) ? buildLineSeg(paragraphMaxHeight(p)) : "") +
     `</hp:p>`
   );
 }

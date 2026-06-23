@@ -414,4 +414,19 @@ describe("인라인 width span flex 행 → 무테 표 승격 (hwp-convert-kmz)"
     expect(tblCount(sec)).toBe(1);
     expect(sec).toMatch(/colCnt="2"/);
   });
+
+  // F-02(Codex plan-review) 가드: 무테표(fitContent) 셀 문단도 buildParagraphXml 을 거친다.
+  // lineseg 분기(fitsOneLine) 도입 후, 짧은 셀 라벨은 1줄에 들어가므로 linesegarray 가 유지되어야
+  // 셀 채우기/높이 박스가 글자를 감싼다(긴 본문 생략 분기와 양립).
+  it("F-02: flex width-span 무테표 셀(짧은 라벨)은 linesegarray 유지", async () => {
+    const sec = await sectionOf(
+      `<div style="display:flex; flex-direction:row"><span style="width:90px">상호</span><span style="width:200px">테스트</span></div>`
+    );
+    expect(tblCount(sec)).toBe(1);
+    // 셀 내부 문단의 linesegarray 가 살아있다(짧은 라벨 = 1줄 → fitsOneLine).
+    const tbl = /<hp:tbl[\s\S]*?<\/hp:tbl>/.exec(sec)![0];
+    expect(tbl).toMatch(/<hp:linesegarray>/);
+    // 무테(borderFillIDRef=1) 표 구조 무회귀.
+    expect(sec).toMatch(/<hp:tbl[^>]*borderFillIDRef="1"/);
+  });
 });
