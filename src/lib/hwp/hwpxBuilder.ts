@@ -277,6 +277,10 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
     paraPropsXml +
     stylesXml +
     `</hh:refList>` +
+    // 한컴 정상 출력 모사: 레이아웃 엔진 버전(HWP201X) + 문서 옵션. trackchageConfig 는 flags 가
+    // 파일마다 달라(하드코딩 위험) 제외. 이 블록은 한글 레이아웃 호환 모드를 정합시킨다.
+    `<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument>` +
+    `<hh:docOption><hh:linkinfo path="" pageInherit="0" footnoteInherit="0"/></hh:docOption>` +
     `</hh:head>`
   );
 }
@@ -483,6 +487,7 @@ function buildCharPropertiesXml(charShapes: HwpCharShape[]): string {
       `<hh:charProperties itemCnt="1">` +
       `<hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">` +
       defaultFontGroupXml() +
+      `<hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/><hh:outline type="NONE"/><hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>` +
       `</hh:charPr>` +
       `</hh:charProperties>`
     );
@@ -501,12 +506,10 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
   const offset = `<hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>`;
   const italic = cs.italic ? `<hh:italic/>` : "";
   const bold = cs.bold ? `<hh:bold/>` : "";
-  const underline = cs.underline
-    ? `<hh:underline type="BOTTOM" shape="SOLID" color="${colorBgrToHex(cs.underlineColor)}"/>`
-    : "";
-  const strikeout = cs.strikeout
-    ? `<hh:strikeout shape="SOLID" color="${colorBgrToHex(cs.textColor)}"/>`
-    : "";
+  // 한컴은 underline/strikeout/outline/shadow 를 항상 emit(미설정 시 NONE). 바이트 정합.
+  const underline = `<hh:underline type="${cs.underline ? "BOTTOM" : "NONE"}" shape="SOLID" color="${colorBgrToHex(cs.underlineColor)}"/>`;
+  const strikeout = `<hh:strikeout shape="${cs.strikeout ? "SOLID" : "NONE"}" color="${colorBgrToHex(cs.textColor)}"/>`;
+  const outlineShadow = `<hh:outline type="NONE"/><hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>`;
 
   const textColor = colorBgrToHex(cs.textColor);
   const shadeColor = cs.shadeColor === 0xffffff || cs.shadeColor === 0 ? "none" : colorBgrToHex(cs.shadeColor);
@@ -524,6 +527,7 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
     bold +
     underline +
     strikeout +
+    outlineShadow +
     `</hh:charPr>`
   );
 }
@@ -546,8 +550,9 @@ function buildParaPropertiesXml(paraShapes: HwpParaShape[]): string {
       `<hh:align horizontal="JUSTIFY" vertical="BASELINE"/>` +
       `<hh:heading type="NONE" idRef="0" level="0"/>` +
       `<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>` +
+      `<hh:autoSpacing eAsianEng="0" eAsianNum="0"/>` +
       `<hh:margin><hh:intent value="0"/><hh:left value="0"/><hh:right value="0"/><hh:prev value="0"/><hh:next value="0"/></hh:margin>` +
-      `<hh:lineSpacing type="PERCENT" value="160"/>` +
+      `<hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>` +
       `</hh:paraPr>` +
       `</hh:paraProperties>`
     );
@@ -573,6 +578,7 @@ function buildParaPrXml(id: number, ps: HwpParaShape): string {
     `<hh:align horizontal="${align}" vertical="BASELINE"/>` +
     `<hh:heading type="NONE" idRef="0" level="0"/>` +
     `<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>` +
+    `<hh:autoSpacing eAsianEng="0" eAsianNum="0"/>` +
     `<hh:margin>` +
     `<hh:intent value="${ps.indent}"/>` +
     `<hh:left value="${ps.leftMargin}"/>` +
@@ -580,7 +586,7 @@ function buildParaPrXml(id: number, ps: HwpParaShape): string {
     `<hh:prev value="${ps.prevSpacing}"/>` +
     `<hh:next value="${ps.nextSpacing}"/>` +
     `</hh:margin>` +
-    `<hh:lineSpacing type="PERCENT" value="${Math.max(0, ps.lineSpacing)}"/>` +
+    `<hh:lineSpacing type="PERCENT" value="${Math.max(0, ps.lineSpacing)}" unit="HWPUNIT"/>` +
     borderChild +
     `</hh:paraPr>`
   );
