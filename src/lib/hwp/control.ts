@@ -16,6 +16,7 @@ import {
   CTRL_FOOTNOTE,
   CTRL_EQUATION,
   CTRL_SECTION_DEF,
+  CTRL_COLUMN_DEF,
   HWPTAG_PAGE_DEF,
   HWPTAG_TABLE,
   HWPTAG_LIST_HEADER,
@@ -83,6 +84,8 @@ export function parseCtrlHeader(
       return parseEquationControl(ctrlHeader, children);
     case CTRL_SECTION_DEF:
       return parseSectionDefControl(children);
+    case CTRL_COLUMN_DEF:
+      return parseColumnDefControl(ctrlData);
     default:
       if (isFieldCtrlId(ctrlIdRaw)) {
         return parseFieldControl(ctrlIdRaw, ctrlData);
@@ -166,6 +169,21 @@ function parseTableControl(
 interface TableMeta {
   rowCount: number;
   colCount: number;
+}
+
+/**
+ * cold(단 정의) 컨트롤 디코드. ctrl_id 제외 데이터 첫 u16 attr 의 bit2~9 = 단 수.
+ * 짧거나 0 이면 colCount=1 폴백(단일 단). 真 다단(≥2)도 일반 지원.
+ */
+function parseColumnDefControl(data: Uint8Array): HwpControl {
+  const r = new ByteReader(data);
+  let colCount = 1;
+  if (r.remaining() >= 2) {
+    const attr = r.readU16();
+    const c = (attr >>> 2) & 0xff;
+    if (c >= 1) colCount = c;
+  }
+  return { kind: "columnDef", colCount };
 }
 
 function parseTableMeta(data: Uint8Array): TableMeta {

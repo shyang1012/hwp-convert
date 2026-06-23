@@ -79,6 +79,31 @@ describe("HWP 표 셀 width/height 보존 (hwp-convert-cm7)", () => {
     expect(nums).not.toContain("NaN");
   });
 
+  // xj3.4 — cold(단 정의) → 본문 colPr 보존
+  it.runIf(HWP_PATH)("본문 cold → colPr emit (단일 secPr colPr 보다 많음)", async () => {
+    const out = await hwpToHwpx(readFileSync(HWP_PATH!));
+    const zip = await JSZip.loadAsync(out);
+    const s1 = await zip.file("Contents/section1.xml")!.async("string");
+    // section1 은 cold(단 정의) 가 있어 secPr colPr(1) + 본문 cold 로 colPr ≥2.
+    expect((s1.match(/<hp:colPr/g) || []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  // xj3.5 — per-section secPr outline/memo ShapeIDRef + header memoProperties
+  it.runIf(HWP_PATH)("secPr outline/memoShapeIDRef 가 섹션별 1-based + memoProperties 정합", async () => {
+    const zip = await JSZip.loadAsync(await hwpToHwpx(readFileSync(HWP_PATH!)));
+    const refOf = async (n: number) => {
+      const x = await zip.file(`Contents/section${n}.xml`)!.async("string");
+      const m = x.match(/<hp:secPr[^>]*>/)![0];
+      return [m.match(/outlineShapeIDRef="(\d+)"/)![1], m.match(/memoShapeIDRef="(\d+)"/)![1]];
+    };
+    expect(await refOf(0)).toEqual(["1", "1"]);
+    expect(await refOf(1)).toEqual(["2", "2"]);
+    const h = await zip.file("Contents/header.xml")!.async("string");
+    // memoShapeIDRef 가 가리키는 memoProperties 가 섹션 수만큼 존재(dangling 방지).
+    expect(h).toMatch(/<hh:memoProperties itemCnt="2">/);
+    expect(h).toMatch(/<hh:memoPr id="2"/);
+  });
+
   // xj3.1 — 셀 borderFillID 보존(회색 격자→투명/선택 테두리)
   it.runIf(HWP_PATH && HWPX_REF_PATH)("헤더 표 셀이 SOLID 격자(id2) 강제 아니라 셀별 실 borderFill 참조", async () => {
     const zip = await JSZip.loadAsync(await hwpToHwpx(readFileSync(HWP_PATH!)));

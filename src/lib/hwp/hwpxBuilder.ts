@@ -178,7 +178,7 @@ export async function buildHwpxFromDocument(
   // 섹션 — lineseg 높이 계산에 쓰도록 charShapes 를 모듈 상태에 노출(문단 채우기 박스 높이 정합)
   layoutCharShapes = doc.docInfo.charShapes ?? [];
   for (let i = 0; i < doc.sections.length; i++) {
-    zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries));
+    zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries, i));
   }
 
   // BinData — 이미 압축된 포맷(jpg/png/gif)은 STORE, 그 외(bmp 등)는 전역 DEFLATE 적용.
@@ -277,6 +277,8 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
     paraPropsXml +
     stylesXml +
     `</hh:refList>` +
+    // 섹션별 secPr.memoShapeIDRef(1..secCnt) 가 참조하는 메모 모양 정의(실제 메모 없어도 한컴이 섹션마다 1개 보유).
+    buildMemoPropertiesXml(Math.max(1, secCnt)) +
     // 한컴 정상 출력 모사: 레이아웃 엔진 버전(HWP201X) + 문서 옵션. trackchageConfig 는 flags 가
     // 파일마다 달라(하드코딩 위험) 제외. 이 블록은 한글 레이아웃 호환 모드를 정합시킨다.
     `<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument>` +
@@ -293,6 +295,17 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
  * IR 커스텀 인덱스 k → 출력 id (k + RESERVED_BORDERFILLS + 1) = k + 3.
  */
 const RESERVED_BORDERFILLS = 2;
+
+/** 섹션별 memoShapeIDRef(1..n) 가 참조하는 memoPr 정의. 실제 메모가 없어도 한컴은 섹션마다 1개 보유(장부). */
+function buildMemoPropertiesXml(n: number): string {
+  const items: string[] = [];
+  for (let i = 1; i <= n; i++) {
+    items.push(
+      `<hh:memoPr id="${i}" width="15590" lineWidth="1" lineType="SOLID" lineColor="#000000" fillColor="#CCFF99" activeColor="#FFFF99" memoType="NOMAL"/>`
+    );
+  }
+  return `<hh:memoProperties itemCnt="${n}">${items.join("")}</hh:memoProperties>`;
+}
 
 function buildBorderFillsXml(borderFills: HwpBorderFill[]): string {
   const none: HwpBorderFill = {
@@ -644,15 +657,25 @@ function alignToOwpml(a: HwpParaShape["alignment"]): string {
 // section.xml 빌드
 // ============================================================
 
-function buildSectionXml(section: HwpSection, binEntries: BinEntry[]): string {
-  const paragraphs = section.paragraphs;
+function buildSectionXml(section: HwpSection, binEntries: BinEntry[], secIndex = 0): string {
+  // 섹션 첫 cold(단 정의)는 secPr 의 colPr 가 대표 → 본문 중복 방지로 그 1개만 제거.
+  let coldRemoved = false;
+  const paragraphs = section.paragraphs.map((p) => {
+    if (coldRemoved) return p;
+    const ci = p.controls.findIndex((c) => c.kind === "columnDef");
+    if (ci < 0) return p;
+    coldRemoved = true;
+    return { ...p, controls: p.controls.filter((_, idx) => idx !== ci) };
+  });
   // 본 문단 + 머리말/꼬리말/각주 인라인 보강
   const parts: string[] = [];
   // 섹션 첫 문단에 secPr(페이지 설정) — 한컴이 섹션을 구성하는 데 필수.
   // section.pageDef 가 있으면 원본 용지/여백 보존, 없으면 기본값 폴백.
+  // outline/memo ShapeIDRef 는 섹션별 1-based(한컴 정상 출력 모사). memo 는 header memoProperties 참조.
+  const secRefs = { outline: secIndex + 1, memo: secIndex + 1 };
   parts.push(
     `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">` +
-      `<hp:run charPrIDRef="0">${buildSecPr(section.pageDef)}</hp:run>` +
+      `<hp:run charPrIDRef="0">${buildSecPr(section.pageDef, secRefs)}</hp:run>` +
       `<hp:run charPrIDRef="0"><hp:t/></hp:run>` +
       DEFAULT_LINESEG +
       `</hp:p>`
@@ -837,6 +860,11 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
         `</hp:equation>` +
         `</hp:run>`
       );
+    }
+    case "columnDef": {
+      // 본문 단 정의/단 바꿈(cold) → colPr ctrl. secPr 의 colPr 와 동일 형식.
+      const n = Math.max(1, ctrl.colCount);
+      return `<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="${n}" sameSz="1" sameGap="0"/></hp:ctrl>`;
     }
     case "header":
     case "footer":

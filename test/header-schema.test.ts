@@ -41,4 +41,10 @@ describe("header.xml 스키마 충실도 (hwp-convert-xj3.3)", () => {
     expect(h).toContain('<hh:autoSpacing eAsianEng="0" eAsianNum="0"/>');
     expect(h).toMatch(/<hh:lineSpacing type="PERCENT" value="\d+" unit="HWPUNIT"\/>/);
   });
+
+  it("memoProperties: 섹션 수만큼 memoPr (HTML 단일 섹션 → itemCnt 1)", async () => {
+    const h = await header(`<p>본문</p>`);
+    expect(h).toMatch(/<hh:memoProperties itemCnt="1">/);
+    expect(h).toContain('<hh:memoPr id="1"');
+  });
 });
