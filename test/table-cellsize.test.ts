@@ -78,4 +78,28 @@ describe("HWP 표 셀 width/height 보존 (hwp-convert-cm7)", () => {
     expect(nums.length).toBeGreaterThan(0);
     expect(nums).not.toContain("NaN");
   });
+
+  // xj3.1 — 셀 borderFillID 보존(회색 격자→투명/선택 테두리)
+  it.runIf(HWP_PATH && HWPX_REF_PATH)("헤더 표 셀이 SOLID 격자(id2) 강제 아니라 셀별 실 borderFill 참조", async () => {
+    const zip = await JSZip.loadAsync(await hwpToHwpx(readFileSync(HWP_PATH!)));
+    const sec = await zip.file("Contents/section0.xml")!.async("string");
+    const hdr = await zip.file("Contents/header.xml")!.async("string");
+    const tbl = sec.match(/<hp:tbl\b[\s\S]*?<\/hp:tbl>/)![0];
+    const refs = [...tbl.matchAll(/<hp:tc\b[^>]*?borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+
+    // 전부 2(예약 SOLID 격자)로 뭉개지지 않고 셀별로 상이해야.
+    expect(refs.every((r) => r === 2)).toBe(false);
+    expect(new Set(refs).size).toBeGreaterThan(1);
+
+    // 투명 셀(참조 borderFill 4면 NONE) 존재 — 정답의 발주처/제목 투명 경계.
+    const borderTypesOf = (xml: string, id: number) => {
+      const bf = xml.match(new RegExp(`<hh:borderFill id="${id}"[\\s\\S]*?</hh:borderFill>`))?.[0] ?? "";
+      return [...bf.matchAll(/<hh:(?:left|right|top|bottom)Border type="(\w+)"/g)].map((m) => m[1]);
+    };
+    const hasTransparent = refs.some((r) => {
+      const types = borderTypesOf(hdr, r);
+      return types.length === 4 && types.every((t) => t === "NONE");
+    });
+    expect(hasTransparent).toBe(true);
+  });
 });

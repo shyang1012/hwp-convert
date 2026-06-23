@@ -151,6 +151,11 @@ function parseTableControl(
         width: cellMeta.width,
         height: cellMeta.height,
         cellMargin: cellMeta.margin,
+        // HWP 셀 borderFillID(1-based DocInfo 인덱스) → IR 0-based. 0/미파싱이면 undefined(빌더 defaultCellBf 폴백).
+        borderFillId:
+          cellMeta.borderFillId !== undefined && cellMeta.borderFillId >= 1
+            ? cellMeta.borderFillId - 1
+            : undefined,
       });
     }
   }
@@ -182,6 +187,8 @@ interface CellMeta {
   height?: number;
   /** 셀 안쪽 여백(HWPUNIT). 4종 완전체로만 설정(부분 금지). */
   margin?: { left: number; right: number; top: number; bottom: number };
+  /** 셀 테두리/채우기 borderFill ID(HWP 1-based, DocInfo borderFills 인덱스). 짧은 레코드면 undefined. */
+  borderFillId?: number;
 }
 
 function parseCellMeta(data: Uint8Array): CellMeta {
@@ -209,7 +216,11 @@ function parseCellMeta(data: Uint8Array): CellMeta {
   if (r.remaining() >= 8) {
     margin = { left: r.readU16(), right: r.readU16(), top: r.readU16(), bottom: r.readU16() };
   }
-  // (borderFillID(u16) 미파싱 — 현 HWP 셀 경로는 defaultCellBf 폴백이라 무회귀.)
+  // 셀 테두리/채우기 borderFillID(u16, HWP 1-based) — 단계별 가드.
+  let borderFillId: number | undefined;
+  if (r.remaining() >= 2) {
+    borderFillId = r.readU16();
+  }
   return {
     col,
     row,
@@ -218,6 +229,7 @@ function parseCellMeta(data: Uint8Array): CellMeta {
     width,
     height,
     margin,
+    borderFillId,
   };
 }
 
