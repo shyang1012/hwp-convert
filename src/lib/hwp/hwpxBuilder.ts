@@ -70,7 +70,7 @@ export async function buildHwpxFromDocument(
   // BinData 매니페스트 항목 사전 구성
   const binEntries: BinEntry[] = [];
   for (const [storageId, { data, extension }] of doc.binData) {
-    const ext = extension.toLowerCase();
+    const ext = extension; // 원본 케이스 보존(소스가 대문자면 .BMP, 소문자면 .bmp). detectImageMime 은 내부 소문자화.
     binEntries.push({
       id: `image${storageId}`,
       href: `BinData/image${storageId}.${ext}`,
@@ -90,30 +90,32 @@ export async function buildHwpxFromDocument(
       `</container>`
   );
 
-  // META-INF/manifest.xml
-  const manifestEntries: string[] = [
-    `<manifest:file-entry manifest:full-path="/" manifest:media-type="application/hwpml-package+xml"/>`,
-    `<manifest:file-entry manifest:full-path="version.xml" manifest:media-type="application/xml"/>`,
-    `<manifest:file-entry manifest:full-path="settings.xml" manifest:media-type="application/xml"/>`,
-    `<manifest:file-entry manifest:full-path="Contents/content.hpf" manifest:media-type="application/hwpml-package+xml"/>`,
-    `<manifest:file-entry manifest:full-path="Contents/header.xml" manifest:media-type="application/xml"/>`,
-  ];
-  for (let i = 0; i < doc.sections.length; i++) {
-    manifestEntries.push(
-      `<manifest:file-entry manifest:full-path="Contents/section${i}.xml" manifest:media-type="application/xml"/>`
-    );
-  }
-  for (const e of binEntries) {
-    manifestEntries.push(
-      `<manifest:file-entry manifest:full-path="${e.href}" manifest:media-type="${e.mediaType}"/>`
-    );
-  }
+  // META-INF/manifest.xml — 한컴 정상 출력 모사: 빈 odf:manifest (파일 등록은 content.hpf 가 담당).
   zip.file(
     "META-INF/manifest.xml",
-    `<?xml version="1.0" encoding="UTF-8"?>\n` +
-      `<manifest:manifest xmlns:manifest="${NS_OASIS_MANIFEST}">` +
-      manifestEntries.join("") +
-      `</manifest:manifest>`
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>` +
+      `<odf:manifest xmlns:odf="${NS_OASIS_MANIFEST}"/>`
+  );
+
+  // META-INF/container.rdf — 패키지 part 메타(header + 각 section + Document). 한컴 정상 출력 모사.
+  const RDF_PKG = "http://www.hancom.co.kr/hwpml/2016/meta/pkg#";
+  const rdfParts: string[] = [
+    `<rdf:Description rdf:about=""><ns0:hasPart xmlns:ns0="${RDF_PKG}" rdf:resource="Contents/header.xml"/></rdf:Description>`,
+    `<rdf:Description rdf:about="Contents/header.xml"><rdf:type rdf:resource="${RDF_PKG}HeaderFile"/></rdf:Description>`,
+  ];
+  for (let i = 0; i < doc.sections.length; i++) {
+    rdfParts.push(
+      `<rdf:Description rdf:about=""><ns0:hasPart xmlns:ns0="${RDF_PKG}" rdf:resource="Contents/section${i}.xml"/></rdf:Description>`,
+      `<rdf:Description rdf:about="Contents/section${i}.xml"><rdf:type rdf:resource="${RDF_PKG}SectionFile"/></rdf:Description>`
+    );
+  }
+  rdfParts.push(`<rdf:Description rdf:about=""><rdf:type rdf:resource="${RDF_PKG}Document"/></rdf:Description>`);
+  zip.file(
+    "META-INF/container.rdf",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>` +
+      `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
+      rdfParts.join("") +
+      `</rdf:RDF>`
   );
 
   // version.xml
@@ -132,20 +134,23 @@ export async function buildHwpxFromDocument(
       `</ha:HWPApplicationSetting>`
   );
 
-  // OPF 매니페스트 + spine
+  // OPF 매니페스트 + spine. 항목 순서는 한컴 정상 출력 모사: header → images → sections → settings.
   const opfManifest: string[] = [
     `<opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>`,
   ];
-  for (let i = 0; i < doc.sections.length; i++) {
-    opfManifest.push(
-      `<opf:item id="section${i}" href="Contents/section${i}.xml" media-type="application/xml"/>`
-    );
-  }
   for (const e of binEntries) {
     opfManifest.push(
       `<opf:item id="${e.id}" href="${e.href}" media-type="${e.mediaType}" isEmbeded="1"/>`
     );
   }
+  for (let i = 0; i < doc.sections.length; i++) {
+    opfManifest.push(
+      `<opf:item id="section${i}" href="Contents/section${i}.xml" media-type="application/xml"/>`
+    );
+  }
+  opfManifest.push(
+    `<opf:item id="settings" href="settings.xml" media-type="application/xml"/>`
+  );
   const spineRefs =
     `<opf:itemref idref="header" linear="yes"/>` +
     doc.sections.map((_, i) => `<opf:itemref idref="section${i}" linear="yes"/>`).join("");
@@ -176,15 +181,18 @@ export async function buildHwpxFromDocument(
     zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries));
   }
 
-  // BinData
+  // BinData — 이미 압축된 포맷(jpg/png/gif)은 STORE, 그 외(bmp 등)는 전역 DEFLATE 적용.
   for (const e of binEntries) {
-    zip.file(e.href, e.data);
+    const lower = e.href.toLowerCase();
+    const precompressed = /\.(jpe?g|png|gif)$/.test(lower);
+    zip.file(e.href, e.data, precompressed ? { compression: "STORE" } : undefined);
   }
 
   // Preview/PrvText.txt — 다른 HWP 뷰어 호환을 위한 평문 미리보기
   zip.file("Preview/PrvText.txt", buildPrvText(doc));
 
-  return await zip.generateAsync({ type: "uint8array" });
+  // 한컴 정상 출력처럼 압축 가능한 콘텐츠(XML·BMP)는 DEFLATE, mimetype/이미 압축된 바이너리는 STORE(위 per-file).
+  return await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
 }
 
 /**
@@ -869,9 +877,24 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   // 컬럼별 너비: t.colWidths(레이아웃 표) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일,
   // 없으면(데이터 표) 기존 균등분할. 누적 반올림 오차는 마지막 컬럼에 흡수.
   const colWidths = computeTableColWidths(t.colWidths, colCount, t.fitContent);
-  const tableW = colWidths.reduce((a, b) => a + b, 0);
-  const tableH = DEFAULT_ROW_HEIGHT * rowCount;
   const defaultCellBf = t.borderless ? 1 : 2;
+
+  // HWP 표 셀의 실 width/height 보존(merge-safe 그리드). colSpan/rowSpan==1 셀만 자기 열폭/행높이 확정,
+  // 미설정 열/행은 폴백(colWidths / DEFAULT_ROW_HEIGHT). HTML/md 표(실값 없음)는 전 경로 기존값 그대로.
+  const hasRealW = t.cells.some((c) => c.width !== undefined);
+  const hasRealH = t.cells.some((c) => c.height !== undefined);
+  const colWidthsReal: number[] = Array.from({ length: colCount }, (_, c) => colWidths[c] ?? 1);
+  const rowHeights: number[] = Array.from({ length: rowCount }, () => DEFAULT_ROW_HEIGHT);
+  for (const cell of t.cells) {
+    if (hasRealW && cell.colSpan === 1 && cell.width !== undefined && cell.col >= 0 && cell.col < colCount) {
+      colWidthsReal[cell.col] = cell.width;
+    }
+    if (hasRealH && cell.rowSpan === 1 && cell.height !== undefined && cell.row >= 0 && cell.row < rowCount) {
+      rowHeights[cell.row] = cell.height; // height 0(빈 행)도 그대로 보존
+    }
+  }
+  const tableW = hasRealW ? colWidthsReal.reduce((a, b) => a + b, 0) : colWidths.reduce((a, b) => a + b, 0);
+  const tableH = hasRealH ? rowHeights.reduce((a, b) => a + b, 0) : DEFAULT_ROW_HEIGHT * rowCount;
 
   const rows: HwpTableCell[][] = Array.from({ length: t.rowCount }, () => []);
   for (const cell of t.cells) {
@@ -896,10 +919,12 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
             .join("");
           const colSpan = Math.max(1, cell.colSpan);
           const rowSpan = Math.max(1, cell.rowSpan);
+          // 병합셀 span-sum: 실값 있으면 실 그리드, 없으면 기존 colWidths/DEFAULT(무회귀). 배열은 전부 number → NaN 없음.
           let cw = 0;
-          for (let k = 0; k < colSpan; k++) cw += colWidths[cell.col + k] ?? 0;
-          if (cw <= 0) cw = colWidths[0] ?? 1;
-          const ch = DEFAULT_ROW_HEIGHT * rowSpan;
+          for (let k = 0; k < colSpan; k++) cw += colWidthsReal[cell.col + k] ?? 0;
+          if (cw <= 0) cw = colWidthsReal[0] ?? 1;
+          let ch = 0;
+          for (let k = 0; k < rowSpan; k++) ch += rowHeights[cell.row + k] ?? DEFAULT_ROW_HEIGHT;
           const inner =
             cellInner ||
             `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"/>${DEFAULT_LINESEG}</hp:p>`;
