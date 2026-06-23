@@ -329,3 +329,89 @@ describe("도장박스 — inline span border → char 테두리 (#4)", () => {
     expect(refs.every((r) => r === 1)).toBe(true);
   });
 });
+
+describe("인라인 width span flex 행 → 무테 표 승격 (hwp-convert-kmz)", () => {
+  // 발주서 '발주자' 줄: flex-col(items-end) > flex-row > [라벨 | 값 | 도장칸(빈 bordered span)]
+  const orderRow =
+    `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:6.75px">` +
+    `<div style="display:flex; flex-direction:row; align-items:center; gap:9px">` +
+    `<span style="width:47.7708px"><strong>발주자</strong></span>` +
+    `<span style="width:108px">테스트 (인)</span>` +
+    `<span aria-hidden="true" style="width:40.5px; border:0.666667px solid rgb(209,213,220)"></span>` +
+    `</div></div>`;
+
+  it("발주자 행 → 1행 3열 무테 표(라벨|값|도장칸), 텍스트·colCnt 보존", async () => {
+    const sec = await sectionOf(orderRow);
+    expect(tblCount(sec)).toBe(1);
+    expect(sec).toMatch(/rowCnt="1" colCnt="3"/);
+    expect(sec).toMatch(/<hp:tbl[^>]*borderFillIDRef="1"/); // 무테
+    expect(sec).toContain("발주자");
+    expect(sec).toContain("테스트 (인)");
+  });
+
+  it("도장칸(빈 bordered span)은 placeholder 없이 정사각 테두리 셀 (PR-01)", async () => {
+    const { header, section } = await hs(orderRow);
+    const refs = [...section.matchAll(/<hp:tc[^>]*borderFillIDRef="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(refs.length).toBe(3);
+    expect(refs[0]).toBe(1); // 라벨 무테
+    expect(refs[1]).toBe(1); // 값 무테
+    expect(refs[2]).toBeGreaterThanOrEqual(3); // 도장칸 = 테두리 셀
+    expect(borderFillOf(header, refs[2])).toContain('<hh:leftBorder type="SOLID"');
+    expect(section).not.toContain("　"); // walkInline placeholder(전각공백) 미주입 — 셀 자체가 박스
+  });
+
+  it("우측정렬: align-items:flex-end → 표 감싼 문단 alignment=RIGHT", async () => {
+    const { header, section } = await hs(orderRow);
+    const pid = /paraPrIDRef="(\d+)"[^>]*>\s*<hp:run[^>]*>\s*<hp:tbl/.exec(section)?.[1];
+    expect(pid).toBeDefined();
+    const pp = new RegExp(`<hh:paraPr id="${pid}"[\\s\\S]*?</hh:paraPr>`).exec(header)?.[0] ?? "";
+    expect(pp).toMatch(/<hh:align[^>]*horizontal="RIGHT"/);
+  });
+
+  it("fitContent: 전폭<42520, 값/도장칸 width 보존 + 라벨 콘텐츠 최소폭 + 레이아웃 셀 lineWrap=KEEP", async () => {
+    const sec = await sectionOf(orderRow);
+    expect(sec).toMatch(/lineWrap="KEEP"/); // 레이아웃 셀 줄바꿈 금지(굵은 라벨 세로깨짐 방지)
+    const total = Number(/<hp:sz width="(\d+)"/.exec(sec)![1]);
+    expect(total).toBeLessThan(42520); // 콘텐츠 폭 표(우측정렬 실효)
+    const cs = [...sec.matchAll(/<hp:cellSz width="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(cs.length).toBe(3);
+    // 발주자 라벨: 디자인폭(47.77px=3583) 이상 — 굵은 3자 겹침 방지로 콘텐츠 최소폭까지 확장됨.
+    expect(cs[0]).toBeGreaterThanOrEqual(3583);
+    expect(cs[0]).toBeLessThan(8100);
+    expect(cs[1]).toBe(8100); // 값(108px): 콘텐츠 < 디자인 → 디자인폭 보존
+    expect(cs[2]).toBe(3038); // 도장칸(40.5px) 보존
+  });
+
+  it("칸 정렬: width만(90/200, border 0) → 2열 표, 셀폭 비 보존 (기존 NEGATIVE와 차이=width 유무)", async () => {
+    const sec = await sectionOf(
+      `<div style="display:flex; flex-direction:row"><span style="width:90px">상호</span><span style="width:200px">테스트</span></div>`
+    );
+    expect(tblCount(sec)).toBe(1);
+    expect(sec).toMatch(/colCnt="2"/);
+    const cs = [...sec.matchAll(/<hp:cellSz width="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(cs).toEqual([6750, 15000]);
+  });
+
+  it("무회귀: width·border 없는 span flex-row 는 표 안 됨", async () => {
+    const sec = await sectionOf(
+      `<div style="display:flex; flex-direction:row"><span>상호</span><span>테스트</span></div>`
+    );
+    expect(tblCount(sec)).toBe(0);
+  });
+
+  it("무회귀(PR-02): 기존 grid 레이아웃 표(fitContent 미설정)는 전폭 42520 유지", async () => {
+    const sec = await sectionOf(
+      `<div style="display:grid; grid-template-columns:300px 100px"><div>A</div><div>B</div></div>`
+    );
+    const cs = [...sec.matchAll(/<hp:cellSz width="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(cs.reduce((a, b) => a + b, 0)).toBe(42520);
+  });
+
+  it("무회귀: 개행/들여쓰기 섞인 flex 행도 승격(loose-text 오판 방지)", async () => {
+    const sec = await sectionOf(
+      `<div style="display:flex; flex-direction:row; gap:9px">\n  <span style="width:90px">상호</span>\n  <span style="width:200px">테스트</span>\n</div>`
+    );
+    expect(tblCount(sec)).toBe(1);
+    expect(sec).toMatch(/colCnt="2"/);
+  });
+});

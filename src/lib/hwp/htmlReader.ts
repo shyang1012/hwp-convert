@@ -116,6 +116,7 @@ interface InlineState {
   shadeColor?: number; // 배경색
   baseSize?: number; // 글자 크기 (HWPUNIT, 1000 = 10pt)
   borderFillId?: number; // 인라인 span border → 글자 테두리(docInfo.borderFills 인덱스)
+  inheritAlign?: HwpParaShape["alignment"]; // 부모 flex/grid 컨테이너의 가로축 정렬(직접 자식 1단계만)
 }
 
 /** 인라인 style 속성에서 색/크기/정렬을 파싱. */
@@ -264,6 +265,32 @@ function parseLayoutStyle(style: string | undefined): LayoutStyle | null {
     return { kind: "flexRow", gapHwp };
   }
   return null;
+}
+
+/** CSS 컨테이너의 가로축 정렬을 추출 → "right"|"center"|undefined.
+ *  axis 인지: flex-direction:column 이면 가로축=align-items, row(기본)면 가로축=justify-content.
+ *  flex-end/end/right→right, center→center, 그 외(flex-start 등)→undefined. flex 컨테이너만. */
+function parseCrossAlign(style: string | undefined): "right" | "center" | undefined {
+  if (!style) return undefined;
+  let display: string | undefined;
+  let flexDir: string | undefined;
+  let alignItems: string | undefined;
+  let justify: string | undefined;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim().toLowerCase();
+    if (prop === "display") display = val;
+    else if (prop === "flex-direction") flexDir = val;
+    else if (prop === "align-items") alignItems = val;
+    else if (prop === "justify-content") justify = val;
+  }
+  if (display !== "flex") return undefined;
+  const horiz = flexDir === "column" ? alignItems : justify;
+  if (horiz === "flex-end" || horiz === "end" || horiz === "right") return "right";
+  if (horiz === "center") return "center";
+  return undefined;
 }
 
 // HWP 너비 인덱스 → mm (hwpxBuilder.BORDER_WIDTH_MM 와 동일). px→mm 후 최근접 인덱스.
@@ -490,12 +517,22 @@ function renderNode(
     case "div":
     case "section":
     case "article": {
+      // inheritAlign 1-level 규칙: 받은 정렬을 이 노드에서 소비하고, 자식 기본 state 에선 비운다.
+      const incomingAlign = state.inheritAlign;
+      const baseState: InlineState = { ...state, inheritAlign: undefined };
       // CSS 가로 다단(display:grid / display:flex row + 블록 자식 ≥2)이면 좌우 배치 표로 합성(a2m).
       const layout = parseLayoutStyle(node.attrs.style);
       if (layout && isLayoutMultiColumn(node, layout)) {
-        return [collectDivColumnsAsParagraph(node, layout, ids, ctx, state)];
+        return [collectDivColumnsAsParagraph(node, layout, ids, ctx, baseState)];
       }
-      return renderNodeChildren(node, ids, ctx, state, prefix);
+      // 명시 width span 또는 도장박스로 구성된 인라인 flex 행 → 무테 표로 승격(우측정렬 보존).
+      if (layout && isInlineWidthRow(node, layout)) {
+        return [collectInlineSpansAsRowTable(node, layout, ids, ctx, baseState, incomingAlign)];
+      }
+      // 이 컨테이너가 flex 면 가로축 정렬을 직접 자식에게만 주입(1단계).
+      const crossAlign = parseCrossAlign(node.attrs.style);
+      const childState: InlineState = crossAlign ? { ...baseState, inheritAlign: crossAlign } : baseState;
+      return renderNodeChildren(node, ids, ctx, childState, prefix);
     }
     case "p":
       // 컨테이너: 자식이 모두 inline 이면 단일 문단, 블록(table/ul/p 등)이 섞이면
@@ -856,6 +893,146 @@ function collectDivColumnsAsParagraph(
         colWidths: layoutColWidths(layout, cols),
         borderless: true,
         cellSpacing: layout.gapHwp,
+      },
+    ],
+  };
+}
+
+/** style 선언에서 단일 prop 값 추출. */
+function cssProp(style: string | undefined, prop: string): string | undefined {
+  if (!style) return undefined;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    if (decl.slice(0, i).trim().toLowerCase() === prop) return decl.slice(i + 1).trim();
+  }
+  return undefined;
+}
+
+/** 노드의 텍스트 내용(자손 문자열 합) — walkInline placeholder 우회용 공백 판정에 사용. */
+function nodeText(node: HtmlNode | string): string {
+  if (typeof node === "string") return node;
+  let s = "";
+  for (const c of node.children) s += nodeText(c);
+  return s;
+}
+
+/** 인라인 span(명시 width 또는 도장박스 포함)으로 구성된 flex/grid 행 → 무테 표 승격 대상 판정. */
+function isInlineWidthRow(node: HtmlNode, layout: LayoutStyle): boolean {
+  if (layout.kind !== "flexRow" && layout.kind !== "grid") return false;
+  // 블록 자식이 섞이면 기존 collectDivColumnsAsParagraph 경로에 양보.
+  if (node.children.some((c) => typeof c !== "string" && !isInlineTag(c.tag))) return false;
+  // 공백 아닌 텍스트노드가 섞이면 셀화 시 유실되므로 승격 포기(폴백 보존). 태그 사이 개행/들여쓰기는 무시.
+  if (node.children.some((c) => typeof c === "string" && c.trim().length > 0)) return false;
+  const spans = node.children.filter(
+    (c): c is HtmlNode => typeof c !== "string" && isInlineTag(c.tag) && c.tag.toLowerCase() !== "br"
+  );
+  if (spans.length < 2) return false;
+  // 트리거: 명시 width(px>0) 보유 ≥1 또는 bordered 빈 span(도장박스).
+  const hasWidth = spans.some((s) => {
+    const w = parseLengthPxPct(cssProp(s.attrs.style, "width"));
+    return w !== undefined && !w.pct && w.v > 0;
+  });
+  const hasSeal = spans.some(
+    (s) => parseBorderStyle(s.attrs.style).hasBorder && collapseWhitespace(nodeText(s)).length === 0
+  );
+  return hasWidth || hasSeal;
+}
+
+/** 자손에 strong/b 가 있는지(굵게 폭 보정용). */
+function hasBoldTag(node: HtmlNode): boolean {
+  for (const c of node.children) {
+    if (typeof c === "string") continue;
+    const t = c.tag.toLowerCase();
+    if (t === "strong" || t === "b") return true;
+    if (hasBoldTag(c)) return true;
+  }
+  return false;
+}
+
+/** span 텍스트의 HWP 추정 폭(HWPUNIT). KEEP(줄바꿈 금지) 셀이 글자보다 좁아 겹치는 것을 막는 바닥값.
+ *  한글/CJK/전각 ≈ 1em, ASCII ≈ 0.55em, 굵게 ×1.08. font-size 미지정 시 16px 가정. */
+function estTextWidthHwp(span: HtmlNode): number {
+  const text = nodeText(span);
+  if (!text.trim()) return 0;
+  const fontPx = parseLengthPxPct(cssProp(span.attrs.style, "font-size"))?.v ?? 16;
+  const fw = cssProp(span.attrs.style, "font-weight");
+  const bold = (fw !== undefined && (fw === "bold" || Number(fw) >= 600)) || hasBoldTag(span);
+  let w = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    w += code >= 0x1100 ? fontPx : fontPx * 0.55; // >=0x1100: 한글/CJK/전각
+  }
+  if (bold) w *= 1.08;
+  return pxToHwpUnit(w);
+}
+
+/** 인라인 span flex/grid 행 → 1행 N열 무테 표(셀=span). width 보존 + 도장박스 정사각 셀 + 우측정렬. */
+function collectInlineSpansAsRowTable(
+  container: HtmlNode,
+  layout: LayoutStyle,
+  ids: ShapeIds,
+  ctx: BuildContext,
+  state: InlineState,
+  incomingAlign?: HwpParaShape["alignment"]
+): HwpParagraph {
+  const spans = container.children.filter(
+    (c): c is HtmlNode => typeof c !== "string" && isInlineTag(c.tag) && c.tag.toLowerCase() !== "br"
+  );
+  const cols = Math.max(1, spans.length);
+  const cellState: InlineState = { ...state, inheritAlign: undefined };
+  const emptyPara = (): HwpParagraph => ({ paraShapeId: 0, styleId: 0, text: "", runs: [], controls: [] });
+  const cells: HwpTableCell[] = [];
+  const colWidths: number[] = [];
+  let allHaveWidth = true;
+  spans.forEach((span, idx) => {
+    const border = parseBorderStyle(span.attrs.style);
+    const borderFillId = border.hasBorder ? registerBorderFillEx(ctx, border.borders, undefined) : undefined;
+    // PR-01: 빈 bordered span(도장칸)은 collectInlineRuns 우회 → walkInline placeholder "　　" 미주입, 빈 셀+셀 border.
+    const isEmptyBordered = border.hasBorder && collapseWhitespace(nodeText(span)).length === 0;
+    const runs = isEmptyBordered ? [] : collectInlineRuns(span, ids, ctx, cellState);
+    const para =
+      runs.length > 0
+        ? { paraShapeId: 0, styleId: 0, text: runsToText(runs), runs, controls: [] }
+        : emptyPara();
+    const w = parseLengthPxPct(cssProp(span.attrs.style, "width"));
+    const designW = w && !w.pct && w.v > 0 ? pxToHwpUnit(w.v) : 0;
+    // 콘텐츠 최소폭 바닥: KEEP 셀이 텍스트보다 좁으면 글자가 겹친다(예: 발주자 47.77px 굵은 3자 → "발자").
+    const minW = isEmptyBordered ? 0 : estTextWidthHwp(span);
+    const colW = Math.max(designW, minW);
+    if (colW <= 0) allHaveWidth = false;
+    colWidths.push(colW);
+    // 레이아웃 셀 안쪽여백 0: span width 는 브라우저에서 content-box(여백 없음)라, 기본 셀여백(좌우 510)을
+    // 두면 딱 맞게 설계된 라벨(예: 발주자 47.77px)이 넘쳐 세로 줄바꿈된다. gap 은 cellSpacing 으로 별도 반영.
+    cells.push({
+      col: idx,
+      row: 0,
+      colSpan: 1,
+      rowSpan: 1,
+      borderFillId,
+      cellMargin: { left: 0, right: 0, top: 0, bottom: 0 },
+      vertAlign: "CENTER",
+      paragraphs: [para],
+    });
+  });
+  // 우측정렬: 부모 align-items(incomingAlign) 우선, 없으면 이 행의 justify-content.
+  const rowAlign = incomingAlign ?? parseCrossAlign(container.attrs.style);
+  const wrapParaId = rowAlign ? registerParaShape(ctx, rowAlign) : 0;
+  return {
+    paraShapeId: wrapParaId,
+    styleId: 0,
+    text: "",
+    runs: [],
+    controls: [
+      {
+        kind: "table",
+        rowCount: 1,
+        colCount: cols,
+        cells,
+        colWidths: allHaveWidth ? colWidths : undefined,
+        borderless: true,
+        cellSpacing: layout.gapHwp,
+        fitContent: true,
       },
     ],
   };

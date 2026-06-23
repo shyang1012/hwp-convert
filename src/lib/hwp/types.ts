@@ -113,6 +113,9 @@ export interface HwpTableControl {
   borderless?: boolean;
   /** 셀 간격(HWPUNIT) — CSS grid gap. 미설정 시 0 */
   cellSpacing?: number;
+  /** 콘텐츠 폭 유지(레이아웃 표 전폭 스케일 회피). 미설정 시 false=기존 본문 전폭 스케일.
+   *  인라인 width span flex 행 승격 표가 우측정렬을 실효화하려면 true. */
+  fitContent?: boolean;
 }
 
 export interface HwpTableCell {
