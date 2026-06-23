@@ -148,6 +148,9 @@ function parseTableControl(
         colSpan: cellMeta.colSpan,
         rowSpan: cellMeta.rowSpan,
         paragraphs: cellParagraphs,
+        width: cellMeta.width,
+        height: cellMeta.height,
+        cellMargin: cellMeta.margin,
       });
     }
   }
@@ -174,6 +177,11 @@ interface CellMeta {
   row: number;
   colSpan: number;
   rowSpan: number;
+  /** 셀 실폭/실높이(HWPUNIT). 짧은 레코드면 undefined. */
+  width?: number;
+  height?: number;
+  /** 셀 안쪽 여백(HWPUNIT). 4종 완전체로만 설정(부분 금지). */
+  margin?: { left: number; right: number; top: number; bottom: number };
 }
 
 function parseCellMeta(data: Uint8Array): CellMeta {
@@ -189,11 +197,27 @@ function parseCellMeta(data: Uint8Array): CellMeta {
   const row = r.readU16();
   const colSpan = r.readU16();
   const rowSpan = r.readU16();
+  // 셀 크기 width(u32) height(u32) — readU16/U32 는 underflow 시 throw → 단계별 all-or-none 가드.
+  let width: number | undefined;
+  let height: number | undefined;
+  let margin: CellMeta["margin"];
+  if (r.remaining() >= 8) {
+    width = r.readU32();
+    height = r.readU32();
+  }
+  // 여백 marginLeft/right/top/bottom(u16×4) — 4종 완전체로만.
+  if (r.remaining() >= 8) {
+    margin = { left: r.readU16(), right: r.readU16(), top: r.readU16(), bottom: r.readU16() };
+  }
+  // (borderFillID(u16) 미파싱 — 현 HWP 셀 경로는 defaultCellBf 폴백이라 무회귀.)
   return {
     col,
     row,
     colSpan: colSpan === 0 ? 1 : colSpan,
     rowSpan: rowSpan === 0 ? 1 : rowSpan,
+    width,
+    height,
+    margin,
   };
 }
 

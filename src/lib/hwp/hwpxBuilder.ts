@@ -877,9 +877,24 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   // 컬럼별 너비: t.colWidths(레이아웃 표) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일,
   // 없으면(데이터 표) 기존 균등분할. 누적 반올림 오차는 마지막 컬럼에 흡수.
   const colWidths = computeTableColWidths(t.colWidths, colCount, t.fitContent);
-  const tableW = colWidths.reduce((a, b) => a + b, 0);
-  const tableH = DEFAULT_ROW_HEIGHT * rowCount;
   const defaultCellBf = t.borderless ? 1 : 2;
+
+  // HWP 표 셀의 실 width/height 보존(merge-safe 그리드). colSpan/rowSpan==1 셀만 자기 열폭/행높이 확정,
+  // 미설정 열/행은 폴백(colWidths / DEFAULT_ROW_HEIGHT). HTML/md 표(실값 없음)는 전 경로 기존값 그대로.
+  const hasRealW = t.cells.some((c) => c.width !== undefined);
+  const hasRealH = t.cells.some((c) => c.height !== undefined);
+  const colWidthsReal: number[] = Array.from({ length: colCount }, (_, c) => colWidths[c] ?? 1);
+  const rowHeights: number[] = Array.from({ length: rowCount }, () => DEFAULT_ROW_HEIGHT);
+  for (const cell of t.cells) {
+    if (hasRealW && cell.colSpan === 1 && cell.width !== undefined && cell.col >= 0 && cell.col < colCount) {
+      colWidthsReal[cell.col] = cell.width;
+    }
+    if (hasRealH && cell.rowSpan === 1 && cell.height !== undefined && cell.row >= 0 && cell.row < rowCount) {
+      rowHeights[cell.row] = cell.height; // height 0(빈 행)도 그대로 보존
+    }
+  }
+  const tableW = hasRealW ? colWidthsReal.reduce((a, b) => a + b, 0) : colWidths.reduce((a, b) => a + b, 0);
+  const tableH = hasRealH ? rowHeights.reduce((a, b) => a + b, 0) : DEFAULT_ROW_HEIGHT * rowCount;
 
   const rows: HwpTableCell[][] = Array.from({ length: t.rowCount }, () => []);
   for (const cell of t.cells) {
@@ -904,10 +919,12 @@ function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
             .join("");
           const colSpan = Math.max(1, cell.colSpan);
           const rowSpan = Math.max(1, cell.rowSpan);
+          // 병합셀 span-sum: 실값 있으면 실 그리드, 없으면 기존 colWidths/DEFAULT(무회귀). 배열은 전부 number → NaN 없음.
           let cw = 0;
-          for (let k = 0; k < colSpan; k++) cw += colWidths[cell.col + k] ?? 0;
-          if (cw <= 0) cw = colWidths[0] ?? 1;
-          const ch = DEFAULT_ROW_HEIGHT * rowSpan;
+          for (let k = 0; k < colSpan; k++) cw += colWidthsReal[cell.col + k] ?? 0;
+          if (cw <= 0) cw = colWidthsReal[0] ?? 1;
+          let ch = 0;
+          for (let k = 0; k < rowSpan; k++) ch += rowHeights[cell.row + k] ?? DEFAULT_ROW_HEIGHT;
           const inner =
             cellInner ||
             `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"/>${DEFAULT_LINESEG}</hp:p>`;

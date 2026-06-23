@@ -124,6 +124,10 @@ export interface HwpTableCell {
   colSpan: number;
   rowSpan: number;
   paragraphs: HwpParagraph[];
+  /** 셀 실폭(HWPUNIT) — HWP 표 셀 list-header. 미설정 시 빌더가 colWidths 로 산정(HTML/md). */
+  width?: number;
+  /** 셀 실높이(HWPUNIT) — HWP 표 셀 list-header. 미설정 시 빌더 DEFAULT_ROW_HEIGHT(HTML/md). */
+  height?: number;
   /** 셀 배경/테두리 — docInfo.borderFills 인덱스. 미설정 시 기본(0) */
   borderFillId?: number;
   /** 셀 안쪽 여백(HWPUNIT) — CSS padding. 미설정 시 빌더 기본 */
