@@ -627,17 +627,56 @@ function renderNode(
         },
       ];
     case "pre": {
-      // pre 안의 텍스트는 모노스페이스로 보존 (개행 유지)
-      const monoState: InlineState = { ...state, mono: true };
-      const text = extractPreText(node);
-      const lines = text.split("\n");
-      return lines.map((line) => ({
-        paraShapeId: 0,
+      // 코드블록: HTML <pre> 의 배경·테두리·구문강조(토큰) 색·줄바꿈을 보존한다.
+      // 배경 박스+외곽 테두리는 1×1 표 셀(채우기+테두리)로, 토큰색은 줄 문단의 색 run 으로,
+      // 들여쓰기/개행은 extractPreLines(공백 비축약)로 — 한글에서 코드블록이 박스로 렌더된다.
+      const ps = parseInlineStyle(node.attrs.style);
+      const border = parseBorderStyle(node.attrs.style);
+      const padding = parsePadding(node.attrs.style);
+      const baseState: InlineState = { bold: false, italic: false, mono: true };
+      if (ps.baseSize !== undefined) baseState.baseSize = ps.baseSize;
+      if (ps.textColor !== undefined) baseState.textColor = ps.textColor; // 토큰 밖 코드 기본색
+      const leftPara = registerParaShape(ctx, "left");
+      const lines = extractPreLines(node, ids, ctx, baseState);
+      const codeParas: HwpParagraph[] = (lines.length > 0 ? lines : [[]]).map((runs) => ({
+        paraShapeId: leftPara,
         styleId: 0,
-        text: line,
-        runs: line.length > 0 ? [{ charShapeId: pickInlineId(ids, monoState), text: line }] : [],
+        text: runsToText(runs),
+        runs,
         controls: [],
       }));
+      const bg = ps.shadeColor;
+      let borderFillId: number | undefined;
+      if (border.hasBorder) borderFillId = registerBorderFillEx(ctx, border.borders, bg);
+      else if (bg !== undefined) borderFillId = registerBorderFill(ctx, bg, false);
+      return [
+        {
+          paraShapeId: 0,
+          styleId: 0,
+          text: "",
+          runs: [],
+          controls: [
+            {
+              kind: "table",
+              rowCount: 1,
+              colCount: 1,
+              borderless: !border.hasBorder,
+              cells: [
+                {
+                  col: 0,
+                  row: 0,
+                  colSpan: 1,
+                  rowSpan: 1,
+                  borderFillId,
+                  cellMargin: padding,
+                  vertAlign: "TOP",
+                  paragraphs: codeParas,
+                },
+              ],
+            },
+          ],
+        },
+      ];
     }
     case "img": {
       const ctrl = imageNodeToControl(node, ctx);
@@ -1206,21 +1245,50 @@ function imageNodeToControl(node: HtmlNode, ctx: BuildContext): HwpControl | nul
   return { kind: "picture", binDataId: id, ...size };
 }
 
-function extractPreText(node: HtmlNode): string {
-  let out = "";
-  const visit = (n: HtmlNode | string): void => {
-    if (typeof n === "string") {
-      out += n;
-      return;
+/**
+ * <pre> 내용을 줄별 run 배열로 추출. 공백/들여쓰기/개행을 **축약 없이** 보존하고,
+ * 토큰 <span style="color">·<strong>/<em> 을 색/굵기 run 으로 살린다(구문강조 보존).
+ * 텍스트 노드의 "\n" 과 <br> 에서 줄을 분리한다. baseState 는 보통 { mono:true, baseSize, textColor }.
+ */
+function extractPreLines(
+  node: HtmlNode,
+  ids: ShapeIds,
+  ctx: BuildContext,
+  baseState: InlineState
+): HwpRun[][] {
+  const lines: HwpRun[][] = [[]];
+  const pushText = (text: string, state: InlineState): void => {
+    const segs = text.split("\n");
+    for (let i = 0; i < segs.length; i++) {
+      if (i > 0) lines.push([]); // 개행 → 새 줄
+      if (segs[i].length > 0) {
+        lines[lines.length - 1].push({
+          charShapeId: resolveInlineCharShape(ids, ctx, state),
+          text: segs[i],
+        });
+      }
     }
-    if (n.tag === "br") {
-      out += "\n";
-      return;
-    }
-    for (const c of n.children) visit(c);
   };
-  for (const c of node.children) visit(c);
-  return out;
+  const visit = (n: HtmlNode | string, state: InlineState): void => {
+    if (typeof n === "string") {
+      pushText(n, state); // collapseWhitespace 미적용(공백 보존)
+      return;
+    }
+    const tag = n.tag.toLowerCase();
+    if (tag === "br") {
+      lines.push([]);
+      return;
+    }
+    let next = state;
+    if (tag === "strong" || tag === "b") next = { ...next, bold: true };
+    if (tag === "em" || tag === "i") next = { ...next, italic: true };
+    const st = parseInlineStyle(n.attrs.style);
+    if (st.textColor !== undefined) next = { ...next, textColor: st.textColor };
+    if (st.baseSize !== undefined) next = { ...next, baseSize: st.baseSize };
+    for (const c of n.children) visit(c, next);
+  };
+  for (const c of node.children) visit(c, baseState);
+  return lines;
 }
 
 function pickInlineId(ids: ShapeIds, state: InlineState): number {
