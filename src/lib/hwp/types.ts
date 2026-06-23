@@ -76,12 +76,19 @@ export type HwpControl =
   | HwpShapeControl
   | HwpEquationControl
   | HwpSectionDefControl
+  | HwpColumnDefControl
   | HwpUnknownControl;
 
 export interface HwpSectionDefControl {
   kind: "sectionDef";
   /** secd 자식 PAGE_DEF 에서 디코드한 페이지 설정 */
   pageDef: HwpPageDef;
+}
+
+export interface HwpColumnDefControl {
+  kind: "columnDef";
+  /** 단(컬럼) 수. 1=단일. cold 컨트롤(본문 단 정의/단 바꿈)에서 디코드. */
+  colCount: number;
 }
 
 export interface HwpShapeControl {

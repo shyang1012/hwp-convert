@@ -178,7 +178,7 @@ export async function buildHwpxFromDocument(
   // 섹션 — lineseg 높이 계산에 쓰도록 charShapes 를 모듈 상태에 노출(문단 채우기 박스 높이 정합)
   layoutCharShapes = doc.docInfo.charShapes ?? [];
   for (let i = 0; i < doc.sections.length; i++) {
-    zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries));
+    zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries, i));
   }
 
   // BinData — 이미 압축된 포맷(jpg/png/gif)은 STORE, 그 외(bmp 등)는 전역 DEFLATE 적용.
@@ -277,6 +277,12 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
     paraPropsXml +
     stylesXml +
     `</hh:refList>` +
+    // 섹션별 secPr.memoShapeIDRef(1..secCnt) 가 참조하는 메모 모양 정의(실제 메모 없어도 한컴이 섹션마다 1개 보유).
+    buildMemoPropertiesXml(Math.max(1, secCnt)) +
+    // 한컴 정상 출력 모사: 레이아웃 엔진 버전(HWP201X) + 문서 옵션. trackchageConfig 는 flags 가
+    // 파일마다 달라(하드코딩 위험) 제외. 이 블록은 한글 레이아웃 호환 모드를 정합시킨다.
+    `<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument>` +
+    `<hh:docOption><hh:linkinfo path="" pageInherit="0" footnoteInherit="0"/></hh:docOption>` +
     `</hh:head>`
   );
 }
@@ -289,6 +295,17 @@ function buildHeaderXmlFromDocInfo(docInfo: HwpDocInfo, secCnt: number): string 
  * IR 커스텀 인덱스 k → 출력 id (k + RESERVED_BORDERFILLS + 1) = k + 3.
  */
 const RESERVED_BORDERFILLS = 2;
+
+/** 섹션별 memoShapeIDRef(1..n) 가 참조하는 memoPr 정의. 실제 메모가 없어도 한컴은 섹션마다 1개 보유(장부). */
+function buildMemoPropertiesXml(n: number): string {
+  const items: string[] = [];
+  for (let i = 1; i <= n; i++) {
+    items.push(
+      `<hh:memoPr id="${i}" width="15590" lineWidth="1" lineType="SOLID" lineColor="#000000" fillColor="#CCFF99" activeColor="#FFFF99" memoType="NOMAL"/>`
+    );
+  }
+  return `<hh:memoProperties itemCnt="${n}">${items.join("")}</hh:memoProperties>`;
+}
 
 function buildBorderFillsXml(borderFills: HwpBorderFill[]): string {
   const none: HwpBorderFill = {
@@ -483,6 +500,7 @@ function buildCharPropertiesXml(charShapes: HwpCharShape[]): string {
       `<hh:charProperties itemCnt="1">` +
       `<hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="1">` +
       defaultFontGroupXml() +
+      `<hh:underline type="NONE" shape="SOLID" color="#000000"/><hh:strikeout shape="NONE" color="#000000"/><hh:outline type="NONE"/><hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>` +
       `</hh:charPr>` +
       `</hh:charProperties>`
     );
@@ -501,12 +519,10 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
   const offset = `<hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>`;
   const italic = cs.italic ? `<hh:italic/>` : "";
   const bold = cs.bold ? `<hh:bold/>` : "";
-  const underline = cs.underline
-    ? `<hh:underline type="BOTTOM" shape="SOLID" color="${colorBgrToHex(cs.underlineColor)}"/>`
-    : "";
-  const strikeout = cs.strikeout
-    ? `<hh:strikeout shape="SOLID" color="${colorBgrToHex(cs.textColor)}"/>`
-    : "";
+  // 한컴은 underline/strikeout/outline/shadow 를 항상 emit(미설정 시 NONE). 바이트 정합.
+  const underline = `<hh:underline type="${cs.underline ? "BOTTOM" : "NONE"}" shape="SOLID" color="${colorBgrToHex(cs.underlineColor)}"/>`;
+  const strikeout = `<hh:strikeout shape="${cs.strikeout ? "SOLID" : "NONE"}" color="${colorBgrToHex(cs.textColor)}"/>`;
+  const outlineShadow = `<hh:outline type="NONE"/><hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>`;
 
   const textColor = colorBgrToHex(cs.textColor);
   const shadeColor = cs.shadeColor === 0xffffff || cs.shadeColor === 0 ? "none" : colorBgrToHex(cs.shadeColor);
@@ -524,6 +540,7 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
     bold +
     underline +
     strikeout +
+    outlineShadow +
     `</hh:charPr>`
   );
 }
@@ -546,8 +563,9 @@ function buildParaPropertiesXml(paraShapes: HwpParaShape[]): string {
       `<hh:align horizontal="JUSTIFY" vertical="BASELINE"/>` +
       `<hh:heading type="NONE" idRef="0" level="0"/>` +
       `<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>` +
+      `<hh:autoSpacing eAsianEng="0" eAsianNum="0"/>` +
       `<hh:margin><hh:intent value="0"/><hh:left value="0"/><hh:right value="0"/><hh:prev value="0"/><hh:next value="0"/></hh:margin>` +
-      `<hh:lineSpacing type="PERCENT" value="160"/>` +
+      `<hh:lineSpacing type="PERCENT" value="160" unit="HWPUNIT"/>` +
       `</hh:paraPr>` +
       `</hh:paraProperties>`
     );
@@ -573,6 +591,7 @@ function buildParaPrXml(id: number, ps: HwpParaShape): string {
     `<hh:align horizontal="${align}" vertical="BASELINE"/>` +
     `<hh:heading type="NONE" idRef="0" level="0"/>` +
     `<hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>` +
+    `<hh:autoSpacing eAsianEng="0" eAsianNum="0"/>` +
     `<hh:margin>` +
     `<hh:intent value="${ps.indent}"/>` +
     `<hh:left value="${ps.leftMargin}"/>` +
@@ -580,7 +599,7 @@ function buildParaPrXml(id: number, ps: HwpParaShape): string {
     `<hh:prev value="${ps.prevSpacing}"/>` +
     `<hh:next value="${ps.nextSpacing}"/>` +
     `</hh:margin>` +
-    `<hh:lineSpacing type="PERCENT" value="${Math.max(0, ps.lineSpacing)}"/>` +
+    `<hh:lineSpacing type="PERCENT" value="${Math.max(0, ps.lineSpacing)}" unit="HWPUNIT"/>` +
     borderChild +
     `</hh:paraPr>`
   );
@@ -638,15 +657,25 @@ function alignToOwpml(a: HwpParaShape["alignment"]): string {
 // section.xml 빌드
 // ============================================================
 
-function buildSectionXml(section: HwpSection, binEntries: BinEntry[]): string {
-  const paragraphs = section.paragraphs;
+function buildSectionXml(section: HwpSection, binEntries: BinEntry[], secIndex = 0): string {
+  // 섹션 첫 cold(단 정의)는 secPr 의 colPr 가 대표 → 본문 중복 방지로 그 1개만 제거.
+  let coldRemoved = false;
+  const paragraphs = section.paragraphs.map((p) => {
+    if (coldRemoved) return p;
+    const ci = p.controls.findIndex((c) => c.kind === "columnDef");
+    if (ci < 0) return p;
+    coldRemoved = true;
+    return { ...p, controls: p.controls.filter((_, idx) => idx !== ci) };
+  });
   // 본 문단 + 머리말/꼬리말/각주 인라인 보강
   const parts: string[] = [];
   // 섹션 첫 문단에 secPr(페이지 설정) — 한컴이 섹션을 구성하는 데 필수.
   // section.pageDef 가 있으면 원본 용지/여백 보존, 없으면 기본값 폴백.
+  // outline/memo ShapeIDRef 는 섹션별 1-based(한컴 정상 출력 모사). memo 는 header memoProperties 참조.
+  const secRefs = { outline: secIndex + 1, memo: secIndex + 1 };
   parts.push(
     `<hp:p id="${makeParaId()}" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0">` +
-      `<hp:run charPrIDRef="0">${buildSecPr(section.pageDef)}</hp:run>` +
+      `<hp:run charPrIDRef="0">${buildSecPr(section.pageDef, secRefs)}</hp:run>` +
       `<hp:run charPrIDRef="0"><hp:t/></hp:run>` +
       DEFAULT_LINESEG +
       `</hp:p>`
@@ -831,6 +860,11 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
         `</hp:equation>` +
         `</hp:run>`
       );
+    }
+    case "columnDef": {
+      // 본문 단 정의/단 바꿈(cold) → colPr ctrl. secPr 의 colPr 와 동일 형식.
+      const n = Math.max(1, ctrl.colCount);
+      return `<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="${n}" sameSz="1" sameGap="0"/></hp:ctrl>`;
     }
     case "header":
     case "footer":

@@ -51,7 +51,10 @@ export const DEFAULT_LINESEG =
  * 그 외(grid/startNum/visibility/각주·미주/페이지테두리/colPr)는 현행 고정 — 한글이 열 때 재계산.
  * landscape 속성은 1차 보존 범위 밖이라 항상 "WIDELY"(가로/세로는 width<height 로 자연 표현).
  */
-export function buildSecPr(pageDef?: HwpPageDef): string {
+export function buildSecPr(
+  pageDef?: HwpPageDef,
+  refs: { outline: number; memo: number } = { outline: 1, memo: 0 }
+): string {
   const width = pageDef ? pageDef.width : 59528;
   const height = pageDef ? pageDef.height : 84186;
   const left = pageDef ? pageDef.left : 8504;
@@ -62,7 +65,7 @@ export function buildSecPr(pageDef?: HwpPageDef): string {
   const footer = pageDef ? pageDef.footer : 4252;
   const gutter = pageDef ? pageDef.gutter : 0;
   return (
-    `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0">` +
+    `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="${refs.outline}" memoShapeIDRef="${refs.memo}" textVerticalWidthHead="0" masterPageCnt="0">` +
     `<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>` +
     `<hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/>` +
     `<hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>` +
