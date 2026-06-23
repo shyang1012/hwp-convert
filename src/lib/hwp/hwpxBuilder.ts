@@ -70,7 +70,7 @@ export async function buildHwpxFromDocument(
   // BinData 매니페스트 항목 사전 구성
   const binEntries: BinEntry[] = [];
   for (const [storageId, { data, extension }] of doc.binData) {
-    const ext = extension.toLowerCase();
+    const ext = extension; // 원본 케이스 보존(소스가 대문자면 .BMP, 소문자면 .bmp). detectImageMime 은 내부 소문자화.
     binEntries.push({
       id: `image${storageId}`,
       href: `BinData/image${storageId}.${ext}`,
@@ -90,30 +90,32 @@ export async function buildHwpxFromDocument(
       `</container>`
   );
 
-  // META-INF/manifest.xml
-  const manifestEntries: string[] = [
-    `<manifest:file-entry manifest:full-path="/" manifest:media-type="application/hwpml-package+xml"/>`,
-    `<manifest:file-entry manifest:full-path="version.xml" manifest:media-type="application/xml"/>`,
-    `<manifest:file-entry manifest:full-path="settings.xml" manifest:media-type="application/xml"/>`,
-    `<manifest:file-entry manifest:full-path="Contents/content.hpf" manifest:media-type="application/hwpml-package+xml"/>`,
-    `<manifest:file-entry manifest:full-path="Contents/header.xml" manifest:media-type="application/xml"/>`,
-  ];
-  for (let i = 0; i < doc.sections.length; i++) {
-    manifestEntries.push(
-      `<manifest:file-entry manifest:full-path="Contents/section${i}.xml" manifest:media-type="application/xml"/>`
-    );
-  }
-  for (const e of binEntries) {
-    manifestEntries.push(
-      `<manifest:file-entry manifest:full-path="${e.href}" manifest:media-type="${e.mediaType}"/>`
-    );
-  }
+  // META-INF/manifest.xml — 한컴 정상 출력 모사: 빈 odf:manifest (파일 등록은 content.hpf 가 담당).
   zip.file(
     "META-INF/manifest.xml",
-    `<?xml version="1.0" encoding="UTF-8"?>\n` +
-      `<manifest:manifest xmlns:manifest="${NS_OASIS_MANIFEST}">` +
-      manifestEntries.join("") +
-      `</manifest:manifest>`
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>` +
+      `<odf:manifest xmlns:odf="${NS_OASIS_MANIFEST}"/>`
+  );
+
+  // META-INF/container.rdf — 패키지 part 메타(header + 각 section + Document). 한컴 정상 출력 모사.
+  const RDF_PKG = "http://www.hancom.co.kr/hwpml/2016/meta/pkg#";
+  const rdfParts: string[] = [
+    `<rdf:Description rdf:about=""><ns0:hasPart xmlns:ns0="${RDF_PKG}" rdf:resource="Contents/header.xml"/></rdf:Description>`,
+    `<rdf:Description rdf:about="Contents/header.xml"><rdf:type rdf:resource="${RDF_PKG}HeaderFile"/></rdf:Description>`,
+  ];
+  for (let i = 0; i < doc.sections.length; i++) {
+    rdfParts.push(
+      `<rdf:Description rdf:about=""><ns0:hasPart xmlns:ns0="${RDF_PKG}" rdf:resource="Contents/section${i}.xml"/></rdf:Description>`,
+      `<rdf:Description rdf:about="Contents/section${i}.xml"><rdf:type rdf:resource="${RDF_PKG}SectionFile"/></rdf:Description>`
+    );
+  }
+  rdfParts.push(`<rdf:Description rdf:about=""><rdf:type rdf:resource="${RDF_PKG}Document"/></rdf:Description>`);
+  zip.file(
+    "META-INF/container.rdf",
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>` +
+      `<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
+      rdfParts.join("") +
+      `</rdf:RDF>`
   );
 
   // version.xml
@@ -132,20 +134,23 @@ export async function buildHwpxFromDocument(
       `</ha:HWPApplicationSetting>`
   );
 
-  // OPF 매니페스트 + spine
+  // OPF 매니페스트 + spine. 항목 순서는 한컴 정상 출력 모사: header → images → sections → settings.
   const opfManifest: string[] = [
     `<opf:item id="header" href="Contents/header.xml" media-type="application/xml"/>`,
   ];
-  for (let i = 0; i < doc.sections.length; i++) {
-    opfManifest.push(
-      `<opf:item id="section${i}" href="Contents/section${i}.xml" media-type="application/xml"/>`
-    );
-  }
   for (const e of binEntries) {
     opfManifest.push(
       `<opf:item id="${e.id}" href="${e.href}" media-type="${e.mediaType}" isEmbeded="1"/>`
     );
   }
+  for (let i = 0; i < doc.sections.length; i++) {
+    opfManifest.push(
+      `<opf:item id="section${i}" href="Contents/section${i}.xml" media-type="application/xml"/>`
+    );
+  }
+  opfManifest.push(
+    `<opf:item id="settings" href="settings.xml" media-type="application/xml"/>`
+  );
   const spineRefs =
     `<opf:itemref idref="header" linear="yes"/>` +
     doc.sections.map((_, i) => `<opf:itemref idref="section${i}" linear="yes"/>`).join("");
@@ -176,15 +181,18 @@ export async function buildHwpxFromDocument(
     zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries));
   }
 
-  // BinData
+  // BinData — 이미 압축된 포맷(jpg/png/gif)은 STORE, 그 외(bmp 등)는 전역 DEFLATE 적용.
   for (const e of binEntries) {
-    zip.file(e.href, e.data);
+    const lower = e.href.toLowerCase();
+    const precompressed = /\.(jpe?g|png|gif)$/.test(lower);
+    zip.file(e.href, e.data, precompressed ? { compression: "STORE" } : undefined);
   }
 
   // Preview/PrvText.txt — 다른 HWP 뷰어 호환을 위한 평문 미리보기
   zip.file("Preview/PrvText.txt", buildPrvText(doc));
 
-  return await zip.generateAsync({ type: "uint8array" });
+  // 한컴 정상 출력처럼 압축 가능한 콘텐츠(XML·BMP)는 DEFLATE, mimetype/이미 압축된 바이너리는 STORE(위 per-file).
+  return await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
 }
 
 /**
