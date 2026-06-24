@@ -27,6 +27,7 @@ import type {
   HwpBorderLine,
   HwpStyle,
   HwpFaceName,
+  HwpPageDef,
   ImageResolver,
   ConvertOptions,
 } from "./types.js";
@@ -186,17 +187,17 @@ function parseInlineStyle(style: string | undefined): ParsedStyle {
   return out;
 }
 
-/** CSS padding(단축 1~4값 / padding-{side}) → 4면 HWPUNIT. 없으면 undefined. */
-function parsePadding(
+/** CSS padding(단축 1~4값 / padding-{side}) → 면별 HWPUNIT. 미지정 면은 undefined(0 폴백 안 함). */
+function parsePaddingSides(
   style: string | undefined
-): { left: number; right: number; top: number; bottom: number } | undefined {
-  if (!style) return undefined;
+): { left?: number; right?: number; top?: number; bottom?: number } {
+  const out: { left?: number; right?: number; top?: number; bottom?: number } = {};
+  if (!style) return out;
   const px = (v: string): number | undefined => {
     const m = /^([\d.]+)px$/.exec(v.trim());
     if (m) return pxToHwpUnit(parseFloat(m[1]));
     return /^0$/.test(v.trim()) ? 0 : undefined;
   };
-  let top: number | undefined, right: number | undefined, bottom: number | undefined, left: number | undefined;
   for (const decl of style.split(";")) {
     const i = decl.indexOf(":");
     if (i < 0) continue;
@@ -205,17 +206,27 @@ function parsePadding(
     if (prop === "padding") {
       const t = val.split(/\s+/).map(px);
       // CSS 단축: 1값=전면, 2값=세로/가로, 3값=상/가로/하, 4값=상우하좌
-      if (t.length === 1) [top, right, bottom, left] = [t[0], t[0], t[0], t[0]];
-      else if (t.length === 2) [top, right, bottom, left] = [t[0], t[1], t[0], t[1]];
-      else if (t.length === 3) [top, right, bottom, left] = [t[0], t[1], t[2], t[1]];
-      else if (t.length >= 4) [top, right, bottom, left] = [t[0], t[1], t[2], t[3]];
-    } else if (prop === "padding-top") top = px(val);
-    else if (prop === "padding-right") right = px(val);
-    else if (prop === "padding-bottom") bottom = px(val);
-    else if (prop === "padding-left") left = px(val);
+      if (t.length === 1) [out.top, out.right, out.bottom, out.left] = [t[0], t[0], t[0], t[0]];
+      else if (t.length === 2) [out.top, out.right, out.bottom, out.left] = [t[0], t[1], t[0], t[1]];
+      else if (t.length === 3) [out.top, out.right, out.bottom, out.left] = [t[0], t[1], t[2], t[1]];
+      else if (t.length >= 4) [out.top, out.right, out.bottom, out.left] = [t[0], t[1], t[2], t[3]];
+    } else if (prop === "padding-top") out.top = px(val);
+    else if (prop === "padding-right") out.right = px(val);
+    else if (prop === "padding-bottom") out.bottom = px(val);
+    else if (prop === "padding-left") out.left = px(val);
   }
-  if (top === undefined && right === undefined && bottom === undefined && left === undefined) return undefined;
-  return { left: left ?? 0, right: right ?? 0, top: top ?? 0, bottom: bottom ?? 0 };
+  return out;
+}
+
+/** CSS padding → 4면 HWPUNIT(미지정 면은 0 폴백). 아무 면도 없으면 undefined. */
+function parsePadding(
+  style: string | undefined
+): { left: number; right: number; top: number; bottom: number } | undefined {
+  const s = parsePaddingSides(style);
+  if (s.top === undefined && s.right === undefined && s.bottom === undefined && s.left === undefined) {
+    return undefined;
+  }
+  return { left: s.left ?? 0, right: s.right ?? 0, top: s.top ?? 0, bottom: s.bottom ?? 0 };
 }
 
 /** CSS 가로 다단 컨테이너 판정 결과. */
@@ -410,6 +421,104 @@ function parseBorderStyle(style: string | undefined): {
   return { borders, hasBorder };
 }
 
+// ── 페이지 설정(용지/여백) 도출 — section.pageDef → buildSecPr 로 합류 (p1x) ──
+
+// A4 치수(HWPUNIT) — buildSecPr 기본값과 동일. 가로 전환은 width/height 스왑으로 표현
+// (한글 레퍼런스 저장본도 세로 A4를 landscape="WIDELY"+width<height 로 출력 → owpml.ts 참조).
+const A4_LONG = 84186; // 297mm
+const A4_SHORT = 59528; // 210mm
+// padding 미지정 시 관습 기본 여백 — buildSecPr 무인자 폴백값과 동일.
+const DEFAULT_PAGE_MARGIN = {
+  left: 8504,
+  right: 8504,
+  top: 5668,
+  bottom: 4252,
+  header: 4252,
+  footer: 4252,
+  gutter: 0,
+};
+
+const PAGE_CONTAINER_TAGS = new Set(["div", "section", "article", "main", "body"]);
+
+/** 의미 있는 엘리먼트 child 만(문자열/공백/주석 제외) 순서 보존. */
+function elementChildren(node: HtmlNode): HtmlNode[] {
+  return node.children.filter((c): c is HtmlNode => typeof c !== "string");
+}
+
+/**
+ * 페이지 설정을 읽을 루트 컨테이너 식별 (p1x).
+ * 우선순위: html>body 내부 첫 블록 컨테이너 → 없으면 #root 의 첫 블록 컨테이너.
+ * 텍스트/공백/주석 노드는 무시하고, 다중 최상위면 첫 블록만 페이지 컨테이너로 본다.
+ */
+function findPageContainer(root: HtmlNode): HtmlNode | undefined {
+  const top = elementChildren(root);
+  const html = top.find((n) => n.tag === "html");
+  const body =
+    top.find((n) => n.tag === "body") ??
+    (html ? elementChildren(html).find((n) => n.tag === "body") : undefined);
+  const scope = body ? elementChildren(body) : top;
+  return scope.find((n) => PAGE_CONTAINER_TAGS.has(n.tag));
+}
+
+/**
+ * 컨테이너 본문폭 — max-width 우선, 없으면 width. px 만 HWPUNIT 으로 변환.
+ * %·auto·calc()·em/rem/vw 등 비px 단위는 undefined(→ 가로 전환 트리거 미발동).
+ */
+function parseContainerWidthHwp(style: string | undefined): number | undefined {
+  if (!style) return undefined;
+  let maxW: number | undefined;
+  let w: number | undefined;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    const m = /^([\d.]+)px$/.exec(val);
+    const v = m ? pxToHwpUnit(parseFloat(m[1])) : undefined;
+    if (prop === "max-width") maxW = v;
+    else if (prop === "width") w = v;
+  }
+  return maxW ?? w;
+}
+
+/**
+ * 루트 컨테이너 CSS → HwpPageDef (p1x).
+ * - 여백: padding 지정 면은 그 값, 미지정 면은 관습 기본.
+ * - 용지: A4 세로 기본. 본문폭이 세로 가용폭(A4폭 − 좌우여백)을 넘으면 A4 가로로 전환.
+ * - 용지/여백 단서(width·padding)가 전혀 없으면 undefined → 빌더 기본 폴백(현행 동작 유지).
+ */
+function deriveHtmlPageDef(container: HtmlNode | undefined): HwpPageDef | undefined {
+  if (!container) return undefined;
+  const style = container.attrs.style;
+  const pad = parsePaddingSides(style);
+  const bodyWidth = parseContainerWidthHwp(style);
+  const hasPad =
+    pad.left !== undefined || pad.right !== undefined || pad.top !== undefined || pad.bottom !== undefined;
+  if (!hasPad && bodyWidth === undefined) return undefined;
+
+  const left = pad.left ?? DEFAULT_PAGE_MARGIN.left;
+  const right = pad.right ?? DEFAULT_PAGE_MARGIN.right;
+  const top = pad.top ?? DEFAULT_PAGE_MARGIN.top;
+  const bottom = pad.bottom ?? DEFAULT_PAGE_MARGIN.bottom;
+
+  // 본문폭이 세로 A4 가용폭을 넘으면 가로 전환(width/height 스왑). 커스텀 용지폭은 만들지 않는다.
+  const portraitUsable = A4_SHORT - left - right;
+  const landscape = bodyWidth !== undefined && bodyWidth > portraitUsable;
+
+  return {
+    width: landscape ? A4_LONG : A4_SHORT,
+    height: landscape ? A4_SHORT : A4_LONG,
+    left,
+    right,
+    top,
+    bottom,
+    header: DEFAULT_PAGE_MARGIN.header,
+    footer: DEFAULT_PAGE_MARGIN.footer,
+    gutter: DEFAULT_PAGE_MARGIN.gutter,
+    landscape,
+  };
+}
+
 export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDocument {
   const tree = parseToTree(html);
 
@@ -457,6 +566,9 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       p.runs.some((r) => ctx.charShapes[r.charShapeId]?.borderFillId !== undefined)
   );
 
+  // 루트 컨테이너 CSS(padding/max-width) → 용지·여백 보존. 단서 없으면 undefined → 빌더 기본 폴백.
+  const pageDef = deriveHtmlPageDef(findPageContainer(tree));
+
   return {
     header: defaultFileHeader(),
     docInfo: {
@@ -478,7 +590,7 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       bullets: [],
       tabDefs: [],
     },
-    sections: [{ paragraphs: filtered }],
+    sections: [{ paragraphs: filtered, ...(pageDef ? { pageDef } : {}) }],
     binData: ctx.binData,
   };
 }
