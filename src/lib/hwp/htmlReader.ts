@@ -657,12 +657,28 @@ function renderNode(
     case "h5":
     case "h6": {
       const depth = Number(tag[1]);
+      const hStyle = parseInlineStyle(node.attrs.style);
+      // 제목 자체 color 가 있으면 제목 글자모양(굵게+제목 크기)에 글자색을 합쳐서 base 로 쓴다.
+      // (없으면 기본 제목 모양 그대로 — 회귀 없음. walkInline 은 baseId 를 직접 쓰므로 여기서 색을 실어야 함)
+      const headingSize = depth === 1 ? 1800 : depth === 2 ? 1600 : depth === 3 ? 1400 : 1200;
       const baseShapeId =
-        depth === 1 ? ids.idH1 : depth === 2 ? ids.idH2 : depth === 3 ? ids.idH3 : ids.idHmin;
+        hStyle.textColor !== undefined
+          ? registerCharShape(ctx, {
+              ...defaultCharShape(),
+              bold: true,
+              baseSize: headingSize,
+              textColor: hStyle.textColor,
+            })
+          : depth === 1
+            ? ids.idH1
+            : depth === 2
+              ? ids.idH2
+              : depth === 3
+                ? ids.idH3
+                : ids.idHmin;
       const runs = collectInlineRuns(node, ids, ctx, state, baseShapeId);
       const text = runsToText(runs);
       if (!text) return [];
-      const hStyle = parseInlineStyle(node.attrs.style);
       const hBfId =
         hStyle.shadeColor !== undefined
           ? registerBorderFill(ctx, hStyle.shadeColor, false)

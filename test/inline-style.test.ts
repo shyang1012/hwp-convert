@@ -80,4 +80,16 @@ describe("html inline style 보존", () => {
     const h = await headerOf(`<div style="color: rgb(26,82,118)"><span>중첩</span></div>`);
     expect(h).toMatch(/textColor="#1A5276"/i);
   });
+
+  it("제목 <h1> color: 흰색 → charShape textColor #FFFFFF (검정 폴백 버그 수정)", async () => {
+    const h = await headerOf(
+      `<h1 style="color: rgb(255,255,255); background-color: rgb(45,55,72)">흰제목</h1>`
+    );
+    expect(h).toMatch(/textColor="#FFFFFF"/i);
+  });
+
+  it("제목 <h2> color: 남색 → charShape textColor 반영", async () => {
+    const h = await headerOf(`<h2 style="color: rgb(16,24,40)">남색제목</h2>`);
+    expect(h).toMatch(/textColor="#101828"/i);
+  });
 });
