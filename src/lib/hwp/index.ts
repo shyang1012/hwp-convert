@@ -38,9 +38,16 @@ import {
   htmlToHwpDocument,
   type MarkdownWriteOptions,
 } from "./converter.js";
-import type { HwpDocument, HwpSection, ImageResolver } from "./types.js";
+import type { HwpDocument, HwpSection, ImageResolver, PageSetupOption } from "./types.js";
 
-export type { HwpDocument, HwpSection, ImageResolver, ConvertOptions } from "./types.js";
+export type {
+  HwpDocument,
+  HwpSection,
+  ImageResolver,
+  ConvertOptions,
+  PageSetupOption,
+  PaperSizeName,
+} from "./types.js";
 export type { MarkdownWriteOptions } from "./converter.js";
 export {
   hwpDocumentToMarkdown,
@@ -198,8 +205,14 @@ export async function markdownToHwpx(
 /** HTML 문서를 HWPX 패키지로 변환. */
 export async function htmlToHwpx(
   html: string,
-  options?: { title?: string; creator?: string; imageResolver?: ImageResolver }
+  options?: {
+    title?: string;
+    creator?: string;
+    imageResolver?: ImageResolver;
+    /** 용지/방향/여백 명시 제어(미지정 시 컨테이너 CSS > 기본값 자동). */
+    page?: PageSetupOption;
+  }
 ): Promise<Uint8Array> {
-  const doc = htmlToHwpDocument(html, { imageResolver: options?.imageResolver });
+  const doc = htmlToHwpDocument(html, { imageResolver: options?.imageResolver, page: options?.page });
   return await hwpDocumentToHwpx(doc, options);
 }

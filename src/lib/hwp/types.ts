@@ -12,9 +12,35 @@ import type { FileHeader } from "./fileHeader.js";
  */
 export type ImageResolver = (src: string) => { data: Uint8Array; extension: string } | null;
 
+/** 지원 용지 종류 이름(일반 세트). 그 외는 커스텀 치수로 지정. */
+export type PaperSizeName = "A4" | "A3" | "A5" | "B4" | "B5" | "Letter" | "Legal";
+
+/**
+ * HTML→HWPX 페이지 설정 명시 제어 옵션. 미지정 필드는 컨테이너 CSS > 기본값 순으로 자동 귀결.
+ * 용지 치수는 한글 네이티브 방식대로 물리값(세로 기준) 고정이며, 방향은 orientation 으로 표현한다.
+ */
+export interface PageSetupOption {
+  /** 용지 종류 이름 또는 커스텀 치수({width,height,unit}). 미지정 시 A4. */
+  size?: PaperSizeName | { width: number; height: number; unit?: "mm" | "hwpunit" };
+  /** 'auto'(기본): 본문폭이 세로 가용폭을 넘으면 가로. 'portrait'/'landscape': 명시 고정. */
+  orientation?: "auto" | "portrait" | "landscape";
+  /** 페이지 여백(mm). 지정 면만 반영, 나머지는 컨테이너 padding > 한글 기본. */
+  margins?: {
+    left?: number;
+    right?: number;
+    top?: number;
+    bottom?: number;
+    header?: number;
+    footer?: number;
+    gutter?: number;
+  };
+}
+
 /** md/html → HwpDocument 변환 옵션. */
 export interface ConvertOptions {
   imageResolver?: ImageResolver;
+  /** HTML→HWPX 용지/방향/여백 명시 제어(p1x 자동동작 오버라이드). */
+  page?: PageSetupOption;
 }
 
 export interface HwpRun {

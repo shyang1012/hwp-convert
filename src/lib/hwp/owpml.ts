@@ -49,7 +49,11 @@ export const DEFAULT_LINESEG =
  * pageDef 가 있으면 용지(width/height)·여백(margin)을 그 값으로 출력하고,
  * 없으면 한컴 A4 세로 기본 프리셋(etc/hwpxcore_test/Contents/section0.xml 기준).
  * 그 외(grid/startNum/visibility/각주·미주/페이지테두리/colPr)는 현행 고정 — 한글이 열 때 재계산.
- * landscape 속성은 1차 보존 범위 밖이라 항상 "WIDELY"(가로/세로는 width<height 로 자연 표현).
+ *
+ * landscape 속성 = 한글 네이티브 방향 플래그. 실증(복합문서 HWPX 실렌더 PDF):
+ * "WIDELY"=세로(portrait), "NARROWLY"=가로(landscape). 용지 치수(width/height)는 물리값(세로 기준)
+ * 고정이고 방향은 이 플래그로 표현한다. pageDef.landscape 가 true 면 NARROWLY, 아니면 WIDELY.
+ * pageDef 미지정(무인자)·세로 경로는 WIDELY 유지 → 기존 출력 바이트 동일(비바테크 회귀 안전).
  */
 export function buildSecPr(
   pageDef?: HwpPageDef,
@@ -64,13 +68,14 @@ export function buildSecPr(
   const header = pageDef ? pageDef.header : 4252;
   const footer = pageDef ? pageDef.footer : 4252;
   const gutter = pageDef ? pageDef.gutter : 0;
+  const landscape = pageDef?.landscape ? "NARROWLY" : "WIDELY";
   return (
     `<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="${refs.outline}" memoShapeIDRef="${refs.memo}" textVerticalWidthHead="0" masterPageCnt="0">` +
     `<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>` +
     `<hp:startNum pageStartsOn="BOTH" page="0" pic="0" tbl="0" equation="0"/>` +
     `<hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>` +
     `<hp:lineNumberShape restartType="0" countBy="0" distance="0" startNumber="0"/>` +
-    `<hp:pagePr landscape="WIDELY" width="${width}" height="${height}" gutterType="LEFT_ONLY">` +
+    `<hp:pagePr landscape="${landscape}" width="${width}" height="${height}" gutterType="LEFT_ONLY">` +
     `<hp:margin header="${header}" footer="${footer}" gutter="${gutter}" left="${left}" right="${right}" top="${top}" bottom="${bottom}"/>` +
     `</hp:pagePr>` +
     `<hp:footNotePr>` +

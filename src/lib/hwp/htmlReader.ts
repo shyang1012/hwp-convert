@@ -30,6 +30,8 @@ import type {
   HwpPageDef,
   ImageResolver,
   ConvertOptions,
+  PageSetupOption,
+  PaperSizeName,
 } from "./types.js";
 
 interface HtmlNode {
@@ -421,13 +423,21 @@ function parseBorderStyle(style: string | undefined): {
   return { borders, hasBorder };
 }
 
-// ── 페이지 설정(용지/여백) 도출 — section.pageDef → buildSecPr 로 합류 (p1x) ──
+// ── 페이지 설정(용지/여백/방향) 도출 — section.pageDef → buildSecPr 로 합류 (p1x·4qp) ──
 
-// A4 치수(HWPUNIT) — buildSecPr 기본값과 동일. 가로 전환은 width/height 스왑으로 표현
-// (한글 레퍼런스 저장본도 세로 A4를 landscape="WIDELY"+width<height 로 출력 → owpml.ts 참조).
-const A4_LONG = 84186; // 297mm
-const A4_SHORT = 59528; // 210mm
-// padding 미지정 시 관습 기본 여백 — buildSecPr 무인자 폴백값과 동일.
+// 용지 물리 치수(HWPUNIT, 세로 기준). 한글 네이티브 방식: 치수는 물리값 고정, 방향은 landscape
+// 플래그로 표현(스왑 안 함). A4 는 buildSecPr 기본값과 동일값 유지(바이트 회귀 방지).
+const PAPER_SIZES: Record<PaperSizeName, { width: number; height: number }> = {
+  A4: { width: 59528, height: 84186 }, // 210×297 (기존 기본값 보존)
+  A3: { width: 84189, height: 119055 }, // 297×420
+  A5: { width: 41953, height: 59528 }, // 148×210
+  B4: { width: 72850, height: 103181 }, // JIS 257×364
+  B5: { width: 51591, height: 72850 }, // JIS 182×257
+  Letter: { width: 61200, height: 79200 }, // 8.5×11in
+  Legal: { width: 61200, height: 100800 }, // 8.5×14in
+};
+const A4_SHORT = PAPER_SIZES.A4.width;
+// padding/옵션 미지정 시 관습 기본 여백 — buildSecPr 무인자 폴백값과 동일.
 const DEFAULT_PAGE_MARGIN = {
   left: 8504,
   right: 8504,
@@ -481,40 +491,98 @@ function parseContainerWidthHwp(style: string | undefined): number | undefined {
   return maxW ?? w;
 }
 
+/** mm → HWPUNIT(1/7200 inch). 1mm = 7200/25.4 HWPUNIT. */
+function mmToHwpUnit(mm: number): number {
+  return Math.round((mm * 7200) / 25.4);
+}
+
 /**
- * 루트 컨테이너 CSS → HwpPageDef (p1x).
- * - 여백: padding 지정 면은 그 값, 미지정 면은 관습 기본.
- * - 용지: A4 세로 기본. 본문폭이 세로 가용폭(A4폭 − 좌우여백)을 넘으면 A4 가로로 전환.
- * - 용지/여백 단서(width·padding)가 전혀 없으면 undefined → 빌더 기본 폴백(현행 동작 유지).
+ * 용지 종류/커스텀 → 물리 치수(HWPUNIT, 세로 기준). 미지정 시 A4.
+ * 이름은 PAPER_SIZES 에서, 커스텀 {width,height,unit}은 단위 변환(unit 기본 'mm').
+ * 알 수 없는 이름·음수/0 치수는 명시 에러.
  */
-function deriveHtmlPageDef(container: HtmlNode | undefined): HwpPageDef | undefined {
-  if (!container) return undefined;
-  const style = container.attrs.style;
+function resolvePaperSize(size: PageSetupOption["size"]): { width: number; height: number } {
+  if (size === undefined) return { ...PAPER_SIZES.A4 };
+  if (typeof size === "string") {
+    const found = PAPER_SIZES[size as PaperSizeName];
+    if (!found) {
+      throw new Error(
+        `지원하지 않는 용지 종류: "${size}". 사용 가능: ${Object.keys(PAPER_SIZES).join(", ")} 또는 {width,height,unit} 커스텀.`
+      );
+    }
+    return { ...found };
+  }
+  const unit = size.unit ?? "mm";
+  const conv = (v: number): number => (unit === "mm" ? mmToHwpUnit(v) : Math.round(v));
+  const width = conv(size.width);
+  const height = conv(size.height);
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error(`용지 커스텀 치수는 양수여야 합니다: width=${size.width}, height=${size.height} (${unit}).`);
+  }
+  return { width, height };
+}
+
+/**
+ * 페이지 설정 도출 → HwpPageDef (p1x·4qp). 한글 네이티브 모델: 용지 물리치수 고정 + landscape 플래그.
+ * 필드별 우선순위: 명시 옵션(pageOpt) > 컨테이너 CSS(padding/max-width) > 기본(A4 / 세로 / 한글기본여백).
+ * 신호가 전혀 없으면(옵션·컨테이너 단서 모두 없음) undefined → 빌더 기본 폴백(현행 출력 바이트 동일).
+ */
+function deriveHtmlPageDef(
+  container: HtmlNode | undefined,
+  pageOpt?: PageSetupOption
+): HwpPageDef | undefined {
+  const style = container?.attrs.style;
   const pad = parsePaddingSides(style);
   const bodyWidth = parseContainerWidthHwp(style);
   const hasPad =
     pad.left !== undefined || pad.right !== undefined || pad.top !== undefined || pad.bottom !== undefined;
-  if (!hasPad && bodyWidth === undefined) return undefined;
+  const m = pageOpt?.margins;
+  const hasMarginOpt =
+    !!m &&
+    (m.left !== undefined ||
+      m.right !== undefined ||
+      m.top !== undefined ||
+      m.bottom !== undefined ||
+      m.header !== undefined ||
+      m.footer !== undefined ||
+      m.gutter !== undefined);
+  const hasOpt = !!pageOpt && (pageOpt.size !== undefined || pageOpt.orientation !== undefined || hasMarginOpt);
+  // 신호 전무 → undefined(빌더 기본 폴백, 바이트 동일)
+  if (!hasOpt && !hasPad && bodyWidth === undefined) return undefined;
 
-  const left = pad.left ?? DEFAULT_PAGE_MARGIN.left;
-  const right = pad.right ?? DEFAULT_PAGE_MARGIN.right;
-  const top = pad.top ?? DEFAULT_PAGE_MARGIN.top;
-  const bottom = pad.bottom ?? DEFAULT_PAGE_MARGIN.bottom;
+  // 용지: 물리 치수 고정(세로 기준). 방향과 무관하게 스왑하지 않는다.
+  const paper = resolvePaperSize(pageOpt?.size);
 
-  // 본문폭이 세로 A4 가용폭을 넘으면 가로 전환(width/height 스왑). 커스텀 용지폭은 만들지 않는다.
-  const portraitUsable = A4_SHORT - left - right;
-  const landscape = bodyWidth !== undefined && bodyWidth > portraitUsable;
+  // 여백: 옵션(mm) > 컨테이너 padding(면별) > 한글 기본.
+  const optMm = (v: number | undefined): number | undefined => (v === undefined ? undefined : mmToHwpUnit(v));
+  const left = optMm(m?.left) ?? pad.left ?? DEFAULT_PAGE_MARGIN.left;
+  const right = optMm(m?.right) ?? pad.right ?? DEFAULT_PAGE_MARGIN.right;
+  const top = optMm(m?.top) ?? pad.top ?? DEFAULT_PAGE_MARGIN.top;
+  const bottom = optMm(m?.bottom) ?? pad.bottom ?? DEFAULT_PAGE_MARGIN.bottom;
+  const header = optMm(m?.header) ?? DEFAULT_PAGE_MARGIN.header;
+  const footer = optMm(m?.footer) ?? DEFAULT_PAGE_MARGIN.footer;
+  const gutter = optMm(m?.gutter) ?? DEFAULT_PAGE_MARGIN.gutter;
+
+  // 방향: 명시 옵션 우선, 기본 'auto'(본문폭이 세로 가용폭을 넘으면 가로). 치수 스왑 없이 플래그만.
+  const orientation = pageOpt?.orientation ?? "auto";
+  let landscape: boolean;
+  if (orientation === "portrait") landscape = false;
+  else if (orientation === "landscape") landscape = true;
+  else {
+    const portraitUsable = paper.width - left - right; // 세로(짧은 변) 가용폭
+    landscape = bodyWidth !== undefined && bodyWidth > portraitUsable;
+  }
 
   return {
-    width: landscape ? A4_LONG : A4_SHORT,
-    height: landscape ? A4_SHORT : A4_LONG,
+    width: paper.width,
+    height: paper.height,
     left,
     right,
     top,
     bottom,
-    header: DEFAULT_PAGE_MARGIN.header,
-    footer: DEFAULT_PAGE_MARGIN.footer,
-    gutter: DEFAULT_PAGE_MARGIN.gutter,
+    header,
+    footer,
+    gutter,
     landscape,
   };
 }
@@ -566,8 +634,8 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       p.runs.some((r) => ctx.charShapes[r.charShapeId]?.borderFillId !== undefined)
   );
 
-  // 루트 컨테이너 CSS(padding/max-width) → 용지·여백 보존. 단서 없으면 undefined → 빌더 기본 폴백.
-  const pageDef = deriveHtmlPageDef(findPageContainer(tree));
+  // 페이지 설정: 명시 옵션(options.page) > 루트 컨테이너 CSS > 기본. 신호 없으면 undefined → 빌더 기본 폴백.
+  const pageDef = deriveHtmlPageDef(findPageContainer(tree), options?.page);
 
   return {
     header: defaultFileHeader(),

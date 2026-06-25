@@ -35,12 +35,12 @@ describe("p1x: HTML→HWPX 용지/여백 보존", () => {
     expect(pd!.bottom).toBe(2400);
   });
 
-  it("2. max-width:840px → A4 가로 전환(width>height)", () => {
+  it("2. max-width:840px → A4 가로 전환(네이티브: 물리치수 고정 + landscape 플래그)", () => {
     const pd = pageDefOf(`<div style="padding:32px 40px; max-width:840px">본문</div>`)!;
     expect(pd.landscape).toBe(true);
-    expect(pd.width).toBe(A4_LONG);
-    expect(pd.height).toBe(A4_SHORT);
-    expect(pd.width).toBeGreaterThan(pd.height);
+    // 한글 네이티브: 치수는 물리값(세로 기준) 고정, 방향은 플래그로만 표현(스왑 없음).
+    expect(pd.width).toBe(A4_SHORT);
+    expect(pd.height).toBe(A4_LONG);
   });
 
   it("3. padding 없는 컨테이너 → 관습 기본 여백 폴백(좌우 8504 등)", () => {
@@ -96,7 +96,8 @@ describe("p1x: HTML→HWPX 용지/여백 보존", () => {
     )!;
     expect(pd.left).toBe(1875); // padding 25px
     expect(pd.landscape).toBe(true); // max-width 840px
-    expect(pd.width).toBe(A4_LONG);
+    expect(pd.width).toBe(A4_SHORT); // 물리치수 고정(스왑 없음)
+    expect(pd.height).toBe(A4_LONG);
   });
 });
 
@@ -125,15 +126,17 @@ function extractPagePr(sectionXml: string): Record<string, string> | null {
 }
 
 describe("p1x: 06.preview.html e2e (픽스처 있을 때만)", () => {
-  it.runIf(PREVIEW_HTML)("secPr 이 A4 가로 + padding 여백을 반영", async () => {
+  it.runIf(PREVIEW_HTML)("secPr 이 A4 가로(NARROWLY) + padding 여백을 반영", async () => {
     const out = await htmlToHwpx(readFileSync(PREVIEW_HTML!, "utf-8"));
     const zip = await JSZip.loadAsync(out);
     const sec = await zip.file("Contents/section0.xml")!.async("string");
     const m = extractPagePr(sec)!;
     expect(m).not.toBeNull();
-    // 루트 div: padding:32px 40px; max-width:840px → A4 가로 + 좌우 3000/상하 2400
-    expect(Number(m.width)).toBe(A4_LONG);
-    expect(Number(m.height)).toBe(A4_SHORT);
+    // 루트 div: padding:32px 40px; max-width:840px → A4 가로(landscape=NARROWLY) + 좌우 3000/상하 2400.
+    // 네이티브 모델: 치수는 물리값(세로 기준) 고정, 방향은 landscape 속성으로 표현.
+    expect(m.landscape).toBe("NARROWLY");
+    expect(Number(m.width)).toBe(A4_SHORT);
+    expect(Number(m.height)).toBe(A4_LONG);
     expect(m.left).toBe("3000");
     expect(m.right).toBe("3000");
     expect(m.top).toBe("2400");
