@@ -25,6 +25,7 @@ import type {
   HwpTabDef,
   HwpParagraph,
   HwpSection,
+  HwpPageDef,
   HwpRun,
   HwpControl,
   HwpTableControl,
@@ -658,6 +659,17 @@ function alignToOwpml(a: HwpParaShape["alignment"]): string {
 // ============================================================
 
 function buildSectionXml(section: HwpSection, binEntries: BinEntry[], secIndex = 0): string {
+  // 섹션 본문 가용 폭 세팅(가로/세로·여백 반영). finally 로 리셋해 다음 섹션 누수 차단.
+  const prevBodyWidth = currentBodyWidth;
+  currentBodyWidth = bodyWidthOf(section.pageDef);
+  try {
+    return buildSectionXmlInner(section, binEntries, secIndex);
+  } finally {
+    currentBodyWidth = prevBodyWidth;
+  }
+}
+
+function buildSectionXmlInner(section: HwpSection, binEntries: BinEntry[], secIndex = 0): string {
   // 섹션 첫 cold(단 정의)는 secPr 의 colPr 가 대표 → 본문 중복 방지로 그 1개만 제거.
   let coldRemoved = false;
   const paragraphs = section.paragraphs.map((p) => {
@@ -708,7 +720,8 @@ let layoutCharShapes: HwpCharShape[] = [];
 
 /**
  * 문단 라인세그를 글자 높이에 맞춰 생성. 채우기/테두리 박스 높이가 lineseg 를 따르므로,
- * 큰 글자(제목 등)에서 박스가 글자보다 작아지지 않도록 한다. h=1000 이면 DEFAULT_LINESEG 와 동일.
+ * 큰 글자(제목 등)에서 박스가 글자보다 작아지지 않도록 한다. horzsize 는 섹션 본문폭(가로/세로 반영).
+ * 세로 A4·h=1000 이면 DEFAULT_LINESEG 와 동일(무회귀).
  */
 function buildLineSeg(maxHeight: number): string {
   const h = Math.max(1000, Math.round(maxHeight));
@@ -716,7 +729,7 @@ function buildLineSeg(maxHeight: number): string {
   const spacing = Math.round(h * 0.6);
   return (
     `<hp:linesegarray>` +
-    `<hp:lineseg textpos="0" vertpos="0" vertsize="${h}" textheight="${h}" baseline="${baseline}" spacing="${spacing}" horzpos="0" horzsize="42520" flags="393216"/>` +
+    `<hp:lineseg textpos="0" vertpos="0" vertsize="${h}" textheight="${h}" baseline="${baseline}" spacing="${spacing}" horzpos="0" horzsize="${currentBodyWidth}" flags="393216"/>` +
     `</hp:linesegarray>`
   );
 }
@@ -749,7 +762,7 @@ function isWideChar(cp: number): boolean {
  * 글자 폭 ≈ 전각=baseSize, 반각=baseSize/2. 합이 본문폭(여유 0.95) 이하면 1줄로 간주.
  */
 function fitsOneLine(p: HwpParagraph): boolean {
-  const limit = TABLE_BODY_WIDTH * 0.95;
+  const limit = currentBodyWidth * 0.95;
   let w = 0;
   const measure = (text: string, charShapeId: number): boolean => {
     const base = layoutCharShapes[charShapeId]?.baseSize ?? 1000;
@@ -812,7 +825,7 @@ const PIC_HEIGHT = 30000;
  * orgSz=curSz 1:1, 단위행렬 — 한글이 실제 크기를 재계산한다.
  */
 function buildPicXml(entry: BinEntry, ctrl?: HwpPictureControl): string {
-  const MAX_W = TABLE_BODY_WIDTH; // 본문 폭(42520)
+  const MAX_W = currentBodyWidth; // 본문 폭(섹션별 — 가로/세로·여백 반영)
   const MAX_H = 70000; // ≈ A4 본문 높이
   const nat = imagePixelSize(entry.data); // 원본 px (비율)
   const ratio = nat && nat.w > 0 ? nat.h / nat.w : PIC_HEIGHT / PIC_WIDTH; // h/w
@@ -917,39 +930,60 @@ function buildControlXml(ctrl: HwpControl, binEntries: BinEntry[]): string {
   }
 }
 
-// 본문 가용 폭(HWPUNIT) — SEC_PR_XML 의 pagePr(width 59528, 좌우 margin 8504) 기준.
-const TABLE_BODY_WIDTH = 42520;
+// 본문 가용 폭(HWPUNIT) 기본값 — SEC_PR_XML 의 pagePr(width 59528, 좌우 margin 8504) 기준.
+// pageDef 없는 경로(평문 writer 등)·세로 A4 폴백. 세로 A4 는 정확히 이 값으로 떨어져 무회귀.
+const DEFAULT_BODY_WIDTH = 42520;
+// 섹션별 본문 가용 폭. buildSectionXml 진입 시 section.pageDef 로 세팅(layoutCharShapes 모듈-가변 패턴).
+// 표 컬럼 스케일·이미지 MAX_W·fitsOneLine 한계·content lineseg horzsize 가 이 값을 따른다.
+let currentBodyWidth = DEFAULT_BODY_WIDTH;
+
+/**
+ * 섹션 pageDef → 유효 본문 가용 폭(HWPUNIT). landscape 는 치수 스왑이 아니라 플래그이므로
+ * (메모리 hwpx-landscape-semantics) 가로일 때 유효 가로폭 = height. 본문폭 = 유효가로폭 − 좌우여백 − 제본.
+ * pageDef 없거나 비정상값이면 기본(세로 A4) 폴백.
+ */
+function bodyWidthOf(pd?: HwpPageDef): number {
+  if (!pd) return DEFAULT_BODY_WIDTH;
+  const horiz = pd.landscape ? pd.height : pd.width;
+  const w = horiz - pd.left - pd.right - pd.gutter;
+  if (w > 0) return Math.floor(w);
+  // 여백 합 ≥ 용지(병리적 입력): 세로A4값 복귀는 가로 페이지에서 자의적 확장이 되므로,
+  // 여백을 무시하고 용지 가로폭(축소 0)을 쓴다. 용지 치수마저 비정상이면 그때만 기본 폴백.
+  return horiz > 0 ? Math.floor(horiz) : DEFAULT_BODY_WIDTH;
+}
+
 const DEFAULT_ROW_HEIGHT = 2000; // 한글이 실제 높이를 재계산하므로 추정값으로 충분
 
 /**
- * 컬럼별 너비 계산. raw(레이아웃 표 colWidths) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일
- * (누적 반올림 오차는 마지막 컬럼 흡수). 없거나 부적합하면 기존 균등분할(데이터 표 무회귀).
+ * 컬럼별 너비 계산. raw(레이아웃 표 colWidths) 가 있으면 합을 본문폭(currentBodyWidth, 가로/세로 반영)
+ * 으로 비례 스케일 (누적 반올림 오차는 마지막 컬럼 흡수). 없거나 부적합하면 기존 균등분할(데이터 표 무회귀).
  */
 function computeTableColWidths(
   raw: number[] | undefined,
   colCount: number,
   fitContent = false
 ): number[] {
+  const bodyW = currentBodyWidth;
   const equal = (): number[] =>
-    Array(colCount).fill(Math.max(1, Math.floor(TABLE_BODY_WIDTH / colCount)));
+    Array(colCount).fill(Math.max(1, Math.floor(bodyW / colCount)));
   if (!raw || raw.length !== colCount) return equal();
   const sum = raw.reduce((a, b) => a + b, 0);
   if (sum <= 0) return equal();
   // fitContent: 콘텐츠 폭 유지(우측정렬 실효화). 본문폭 초과 시에만 비례 축소(overflow 방지).
-  if (fitContent && sum <= TABLE_BODY_WIDTH) {
+  if (fitContent && sum <= bodyW) {
     return raw.map((w) => Math.max(1, Math.floor(w)));
   }
-  // 기본(또는 fitContent overflow): 합을 TABLE_BODY_WIDTH 로 비례 스케일.
-  const scaled = raw.map((w) => Math.max(1, Math.floor((w * TABLE_BODY_WIDTH) / sum)));
+  // 기본(또는 fitContent overflow): 합을 본문폭으로 비례 스케일.
+  const scaled = raw.map((w) => Math.max(1, Math.floor((w * bodyW) / sum)));
   const used = scaled.reduce((a, b) => a + b, 0);
-  scaled[colCount - 1] = Math.max(1, scaled[colCount - 1] + (TABLE_BODY_WIDTH - used));
+  scaled[colCount - 1] = Math.max(1, scaled[colCount - 1] + (bodyW - used));
   return scaled;
 }
 
 function buildTableXml(t: HwpTableControl, binEntries: BinEntry[]): string {
   const colCount = Math.max(1, t.colCount);
   const rowCount = Math.max(1, t.rowCount);
-  // 컬럼별 너비: t.colWidths(레이아웃 표) 가 있으면 합을 TABLE_BODY_WIDTH 로 비례 스케일,
+  // 컬럼별 너비: t.colWidths(레이아웃 표) 가 있으면 합을 본문폭(가로/세로 반영)으로 비례 스케일,
   // 없으면(데이터 표) 기존 균등분할. 누적 반올림 오차는 마지막 컬럼에 흡수.
   const colWidths = computeTableColWidths(t.colWidths, colCount, t.fitContent);
   const defaultCellBf = t.borderless ? 1 : 2;
