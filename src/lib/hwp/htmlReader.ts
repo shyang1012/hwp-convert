@@ -41,7 +41,7 @@ interface HtmlNode {
   parent: HtmlNode | null;
 }
 
-function parseToTree(html: string): HtmlNode {
+function parseToTree(html: string): { root: HtmlNode; styleText: string } {
   const root: HtmlNode = { tag: "#root", attrs: {}, children: [], parent: null };
   let current: HtmlNode = root;
   const voidTags = new Set([
@@ -49,10 +49,14 @@ function parseToTree(html: string): HtmlNode {
   ]);
   const skipTags = new Set(["script", "style", "head", "noscript", "template"]);
   let inSkippedTag = 0;
+  // <style> 텍스트는 본문 트리에선 제외하되 @page 파싱용으로 따로 모은다(wku). depth>0 이면 style 내부.
+  let inStyle = 0;
+  const styleChunks: string[] = [];
 
   const parser = new Parser(
     {
       onopentag(name, attrs) {
+        if (name === "style") inStyle++;
         if (skipTags.has(name)) {
           inSkippedTag++;
           return;
@@ -63,10 +67,12 @@ function parseToTree(html: string): HtmlNode {
         if (!voidTags.has(name)) current = node;
       },
       ontext(text) {
+        if (inStyle > 0) styleChunks.push(text);
         if (inSkippedTag > 0) return;
         current.children.push(text);
       },
       onclosetag(name) {
+        if (name === "style") inStyle = Math.max(0, inStyle - 1);
         if (skipTags.has(name)) {
           inSkippedTag = Math.max(0, inSkippedTag - 1);
           return;
@@ -82,7 +88,7 @@ function parseToTree(html: string): HtmlNode {
   );
   parser.write(html);
   parser.end();
-  return root;
+  return { root, styleText: styleChunks.join("") };
 }
 
 interface BuildContext {
@@ -522,9 +528,127 @@ function resolvePaperSize(size: PageSetupOption["size"]): { width: number; heigh
   return { width, height };
 }
 
+/** CSS 길이 토큰 → mm. @page margin/size 전용(mm·cm·in·pt·px). 단위 없으면 undefined. */
+function cssLenToMm(token: string): number | undefined {
+  const t = token.trim();
+  if (/^0+(?:\.0+)?$/.test(t)) return 0; // CSS 규격: 0 은 무단위 허용(margin:0 등 흔한 초기화)
+  const m = /^([\d.]+)(mm|cm|in|pt|px)$/i.exec(t);
+  if (!m) return undefined;
+  const v = parseFloat(m[1]);
+  switch (m[2].toLowerCase()) {
+    case "mm": return v;
+    case "cm": return v * 10;
+    case "in": return v * 25.4;
+    case "pt": return (v * 25.4) / 72;
+    case "px": return (v * 25.4) / 96;
+  }
+  return undefined;
+}
+
+/** 용지명 소문자 → 정식 PaperSizeName(@page size 대소문자 무시 매칭). */
+const PAPER_NAME_BY_LOWER: Record<string, PaperSizeName> = Object.fromEntries(
+  (Object.keys(PAPER_SIZES) as PaperSizeName[]).map((n) => [n.toLowerCase(), n])
+);
+
+/**
+ * `@page { size; margin }` 규칙 → 부분 PageSetupOption (wku). 셀렉터 없는 bare `@page` 블록을
+ * 모두 순회해 병합한다(나중 블록이 같은 속성 덮어씀 = CSS cascade). `@page :first`/named page 같은
+ * 셀렉터 변형은 `\s*\{` 가 자연히 스킵(1차 미지원). 인쇄 전용 속성(bleed/marks 등)은 무시.
+ * size: 방향 키워드(portrait/landscape) / 용지명 / 두 길이(커스텀 mm). margin: 단축 1~4 + margin-면(mm 환산).
+ * 신호 없으면 undefined.
+ */
+function parseAtPage(css: string): PageSetupOption | undefined {
+  if (!css) return undefined;
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, ""); // CSS 주석 제거(선언 오파싱 방지)
+  const out: PageSetupOption = {};
+  const margins: NonNullable<PageSetupOption["margins"]> = {};
+  let hasMargin = false;
+  const setMargin = (side: keyof typeof margins, mm: number | undefined): void => {
+    if (mm !== undefined) {
+      margins[side] = mm;
+      hasMargin = true;
+    }
+  };
+  const re = /@page\s*\{([^{}]*)\}/gi;
+  let block: RegExpExecArray | null;
+  let found = false;
+  while ((block = re.exec(clean)) !== null) {
+    found = true;
+    for (const decl of block[1].split(";")) {
+      const i = decl.indexOf(":");
+      if (i < 0) continue;
+      const prop = decl.slice(0, i).trim().toLowerCase();
+      const val = decl.slice(i + 1).trim();
+      if (!val) continue;
+      if (prop === "size") {
+        const lens: number[] = [];
+        for (const tk of val.split(/\s+/)) {
+          const low = tk.toLowerCase();
+          if (low === "portrait" || low === "landscape") out.orientation = low;
+          else if (low === "auto") continue;
+          else if (PAPER_NAME_BY_LOWER[low]) out.size = PAPER_NAME_BY_LOWER[low];
+          else {
+            const mm = cssLenToMm(tk);
+            if (mm !== undefined) lens.push(mm);
+          }
+        }
+        if (lens.length >= 2) out.size = { width: lens[0], height: lens[1], unit: "mm" };
+      } else if (prop === "margin") {
+        const t = val.split(/\s+/).map(cssLenToMm);
+        // CSS 단축: 1=전면, 2=세로/가로, 3=상/가로/하, 4=상우하좌
+        let top: number | undefined, right: number | undefined, bottom: number | undefined, left: number | undefined;
+        if (t.length === 1) [top, right, bottom, left] = [t[0], t[0], t[0], t[0]];
+        else if (t.length === 2) [top, right, bottom, left] = [t[0], t[1], t[0], t[1]];
+        else if (t.length === 3) [top, right, bottom, left] = [t[0], t[1], t[2], t[1]];
+        else [top, right, bottom, left] = [t[0], t[1], t[2], t[3]];
+        setMargin("top", top);
+        setMargin("right", right);
+        setMargin("bottom", bottom);
+        setMargin("left", left);
+      } else if (prop === "margin-top") setMargin("top", cssLenToMm(val));
+      else if (prop === "margin-right") setMargin("right", cssLenToMm(val));
+      else if (prop === "margin-bottom") setMargin("bottom", cssLenToMm(val));
+      else if (prop === "margin-left") setMargin("left", cssLenToMm(val));
+    }
+  }
+  if (!found) return undefined;
+  if (hasMargin) out.margins = margins;
+  return out.size !== undefined || out.orientation !== undefined || out.margins !== undefined
+    ? out
+    : undefined;
+}
+
+/**
+ * 페이지 옵션 병합 — 필드별 API(api) 우선, 빈 자리는 @page CSS(css)로 채움 (wku).
+ * deriveHtmlPageDef 의 pageOpt 로 넘기면 컨테이너 휴리스틱은 자동으로 그 아래가 된다.
+ */
+function mergePageOpt(api?: PageSetupOption, css?: PageSetupOption): PageSetupOption | undefined {
+  if (!api) return css;
+  if (!css) return api;
+  const am = api.margins;
+  const cm = css.margins;
+  const margins =
+    am || cm
+      ? {
+          left: am?.left ?? cm?.left,
+          right: am?.right ?? cm?.right,
+          top: am?.top ?? cm?.top,
+          bottom: am?.bottom ?? cm?.bottom,
+          header: am?.header ?? cm?.header,
+          footer: am?.footer ?? cm?.footer,
+          gutter: am?.gutter ?? cm?.gutter,
+        }
+      : undefined;
+  return {
+    size: api.size ?? css.size,
+    orientation: api.orientation ?? css.orientation,
+    margins,
+  };
+}
+
 /**
  * 페이지 설정 도출 → HwpPageDef (p1x·4qp). 한글 네이티브 모델: 용지 물리치수 고정 + landscape 플래그.
- * 필드별 우선순위: 명시 옵션(pageOpt) > 컨테이너 CSS(padding/max-width) > 기본(A4 / 세로 / 한글기본여백).
+ * 필드별 우선순위: 명시 옵션(pageOpt = API > @page CSS 병합) > 컨테이너 CSS(padding/max-width) > 기본(A4 / 세로 / 한글기본여백).
  * 신호가 전혀 없으면(옵션·컨테이너 단서 모두 없음) undefined → 빌더 기본 폴백(현행 출력 바이트 동일).
  */
 function deriveHtmlPageDef(
@@ -588,7 +712,9 @@ function deriveHtmlPageDef(
 }
 
 export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDocument {
-  const tree = parseToTree(html);
+  const { root: tree, styleText } = parseToTree(html);
+  // 페이지 옵션: API(options.page) > @page CSS 병합. 컨테이너 휴리스틱은 deriveHtmlPageDef 안에서 그 아래.
+  const effPage = mergePageOpt(options?.page, parseAtPage(styleText));
 
   const ctx: BuildContext = {
     charShapeIds: new Map(),
@@ -634,8 +760,8 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       p.runs.some((r) => ctx.charShapes[r.charShapeId]?.borderFillId !== undefined)
   );
 
-  // 페이지 설정: 명시 옵션(options.page) > 루트 컨테이너 CSS > 기본. 신호 없으면 undefined → 빌더 기본 폴백.
-  const pageDef = deriveHtmlPageDef(findPageContainer(tree), options?.page);
+  // 페이지 설정: 병합 옵션(API > @page CSS) > 루트 컨테이너 CSS > 기본. 신호 없으면 undefined → 빌더 기본 폴백.
+  const pageDef = deriveHtmlPageDef(findPageContainer(tree), effPage);
 
   return {
     header: defaultFileHeader(),
