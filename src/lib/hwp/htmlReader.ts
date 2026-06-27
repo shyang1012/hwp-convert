@@ -27,8 +27,11 @@ import type {
   HwpBorderLine,
   HwpStyle,
   HwpFaceName,
+  HwpPageDef,
   ImageResolver,
   ConvertOptions,
+  PageSetupOption,
+  PaperSizeName,
 } from "./types.js";
 
 interface HtmlNode {
@@ -38,7 +41,7 @@ interface HtmlNode {
   parent: HtmlNode | null;
 }
 
-function parseToTree(html: string): HtmlNode {
+function parseToTree(html: string): { root: HtmlNode; styleText: string } {
   const root: HtmlNode = { tag: "#root", attrs: {}, children: [], parent: null };
   let current: HtmlNode = root;
   const voidTags = new Set([
@@ -46,10 +49,14 @@ function parseToTree(html: string): HtmlNode {
   ]);
   const skipTags = new Set(["script", "style", "head", "noscript", "template"]);
   let inSkippedTag = 0;
+  // <style> 텍스트는 본문 트리에선 제외하되 @page 파싱용으로 따로 모은다(wku). depth>0 이면 style 내부.
+  let inStyle = 0;
+  const styleChunks: string[] = [];
 
   const parser = new Parser(
     {
       onopentag(name, attrs) {
+        if (name === "style") inStyle++;
         if (skipTags.has(name)) {
           inSkippedTag++;
           return;
@@ -60,10 +67,12 @@ function parseToTree(html: string): HtmlNode {
         if (!voidTags.has(name)) current = node;
       },
       ontext(text) {
+        if (inStyle > 0) styleChunks.push(text);
         if (inSkippedTag > 0) return;
         current.children.push(text);
       },
       onclosetag(name) {
+        if (name === "style") inStyle = Math.max(0, inStyle - 1);
         if (skipTags.has(name)) {
           inSkippedTag = Math.max(0, inSkippedTag - 1);
           return;
@@ -79,7 +88,7 @@ function parseToTree(html: string): HtmlNode {
   );
   parser.write(html);
   parser.end();
-  return root;
+  return { root, styleText: styleChunks.join("") };
 }
 
 interface BuildContext {
@@ -186,17 +195,17 @@ function parseInlineStyle(style: string | undefined): ParsedStyle {
   return out;
 }
 
-/** CSS padding(단축 1~4값 / padding-{side}) → 4면 HWPUNIT. 없으면 undefined. */
-function parsePadding(
+/** CSS padding(단축 1~4값 / padding-{side}) → 면별 HWPUNIT. 미지정 면은 undefined(0 폴백 안 함). */
+function parsePaddingSides(
   style: string | undefined
-): { left: number; right: number; top: number; bottom: number } | undefined {
-  if (!style) return undefined;
+): { left?: number; right?: number; top?: number; bottom?: number } {
+  const out: { left?: number; right?: number; top?: number; bottom?: number } = {};
+  if (!style) return out;
   const px = (v: string): number | undefined => {
     const m = /^([\d.]+)px$/.exec(v.trim());
     if (m) return pxToHwpUnit(parseFloat(m[1]));
     return /^0$/.test(v.trim()) ? 0 : undefined;
   };
-  let top: number | undefined, right: number | undefined, bottom: number | undefined, left: number | undefined;
   for (const decl of style.split(";")) {
     const i = decl.indexOf(":");
     if (i < 0) continue;
@@ -205,17 +214,27 @@ function parsePadding(
     if (prop === "padding") {
       const t = val.split(/\s+/).map(px);
       // CSS 단축: 1값=전면, 2값=세로/가로, 3값=상/가로/하, 4값=상우하좌
-      if (t.length === 1) [top, right, bottom, left] = [t[0], t[0], t[0], t[0]];
-      else if (t.length === 2) [top, right, bottom, left] = [t[0], t[1], t[0], t[1]];
-      else if (t.length === 3) [top, right, bottom, left] = [t[0], t[1], t[2], t[1]];
-      else if (t.length >= 4) [top, right, bottom, left] = [t[0], t[1], t[2], t[3]];
-    } else if (prop === "padding-top") top = px(val);
-    else if (prop === "padding-right") right = px(val);
-    else if (prop === "padding-bottom") bottom = px(val);
-    else if (prop === "padding-left") left = px(val);
+      if (t.length === 1) [out.top, out.right, out.bottom, out.left] = [t[0], t[0], t[0], t[0]];
+      else if (t.length === 2) [out.top, out.right, out.bottom, out.left] = [t[0], t[1], t[0], t[1]];
+      else if (t.length === 3) [out.top, out.right, out.bottom, out.left] = [t[0], t[1], t[2], t[1]];
+      else if (t.length >= 4) [out.top, out.right, out.bottom, out.left] = [t[0], t[1], t[2], t[3]];
+    } else if (prop === "padding-top") out.top = px(val);
+    else if (prop === "padding-right") out.right = px(val);
+    else if (prop === "padding-bottom") out.bottom = px(val);
+    else if (prop === "padding-left") out.left = px(val);
   }
-  if (top === undefined && right === undefined && bottom === undefined && left === undefined) return undefined;
-  return { left: left ?? 0, right: right ?? 0, top: top ?? 0, bottom: bottom ?? 0 };
+  return out;
+}
+
+/** CSS padding → 4면 HWPUNIT(미지정 면은 0 폴백). 아무 면도 없으면 undefined. */
+function parsePadding(
+  style: string | undefined
+): { left: number; right: number; top: number; bottom: number } | undefined {
+  const s = parsePaddingSides(style);
+  if (s.top === undefined && s.right === undefined && s.bottom === undefined && s.left === undefined) {
+    return undefined;
+  }
+  return { left: s.left ?? 0, right: s.right ?? 0, top: s.top ?? 0, bottom: s.bottom ?? 0 };
 }
 
 /** CSS 가로 다단 컨테이너 판정 결과. */
@@ -410,8 +429,292 @@ function parseBorderStyle(style: string | undefined): {
   return { borders, hasBorder };
 }
 
+// ── 페이지 설정(용지/여백/방향) 도출 — section.pageDef → buildSecPr 로 합류 (p1x·4qp) ──
+
+// 용지 물리 치수(HWPUNIT, 세로 기준). 한글 네이티브 방식: 치수는 물리값 고정, 방향은 landscape
+// 플래그로 표현(스왑 안 함). A4 는 buildSecPr 기본값과 동일값 유지(바이트 회귀 방지).
+const PAPER_SIZES: Record<PaperSizeName, { width: number; height: number }> = {
+  A4: { width: 59528, height: 84186 }, // 210×297 (기존 기본값 보존)
+  A3: { width: 84189, height: 119055 }, // 297×420
+  A5: { width: 41953, height: 59528 }, // 148×210
+  B4: { width: 72850, height: 103181 }, // JIS 257×364
+  B5: { width: 51591, height: 72850 }, // JIS 182×257
+  Letter: { width: 61200, height: 79200 }, // 8.5×11in
+  Legal: { width: 61200, height: 100800 }, // 8.5×14in
+};
+const A4_SHORT = PAPER_SIZES.A4.width;
+// padding/옵션 미지정 시 관습 기본 여백 — buildSecPr 무인자 폴백값과 동일.
+const DEFAULT_PAGE_MARGIN = {
+  left: 8504,
+  right: 8504,
+  top: 5668,
+  bottom: 4252,
+  header: 4252,
+  footer: 4252,
+  gutter: 0,
+};
+
+const PAGE_CONTAINER_TAGS = new Set(["div", "section", "article", "main", "body"]);
+
+/** 의미 있는 엘리먼트 child 만(문자열/공백/주석 제외) 순서 보존. */
+function elementChildren(node: HtmlNode): HtmlNode[] {
+  return node.children.filter((c): c is HtmlNode => typeof c !== "string");
+}
+
+/**
+ * 페이지 설정을 읽을 루트 컨테이너 식별 (p1x).
+ * 우선순위: html>body 내부 첫 블록 컨테이너 → 없으면 #root 의 첫 블록 컨테이너.
+ * 텍스트/공백/주석 노드는 무시하고, 다중 최상위면 첫 블록만 페이지 컨테이너로 본다.
+ */
+function findPageContainer(root: HtmlNode): HtmlNode | undefined {
+  const top = elementChildren(root);
+  const html = top.find((n) => n.tag === "html");
+  const body =
+    top.find((n) => n.tag === "body") ??
+    (html ? elementChildren(html).find((n) => n.tag === "body") : undefined);
+  const scope = body ? elementChildren(body) : top;
+  return scope.find((n) => PAGE_CONTAINER_TAGS.has(n.tag));
+}
+
+/**
+ * 컨테이너 본문폭 — max-width 우선, 없으면 width. px 만 HWPUNIT 으로 변환.
+ * %·auto·calc()·em/rem/vw 등 비px 단위는 undefined(→ 가로 전환 트리거 미발동).
+ */
+function parseContainerWidthHwp(style: string | undefined): number | undefined {
+  if (!style) return undefined;
+  let maxW: number | undefined;
+  let w: number | undefined;
+  for (const decl of style.split(";")) {
+    const i = decl.indexOf(":");
+    if (i < 0) continue;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    const m = /^([\d.]+)px$/.exec(val);
+    const v = m ? pxToHwpUnit(parseFloat(m[1])) : undefined;
+    if (prop === "max-width") maxW = v;
+    else if (prop === "width") w = v;
+  }
+  return maxW ?? w;
+}
+
+/** mm → HWPUNIT(1/7200 inch). 1mm = 7200/25.4 HWPUNIT. */
+function mmToHwpUnit(mm: number): number {
+  return Math.round((mm * 7200) / 25.4);
+}
+
+/**
+ * 용지 종류/커스텀 → 물리 치수(HWPUNIT, 세로 기준). 미지정 시 A4.
+ * 이름은 PAPER_SIZES 에서, 커스텀 {width,height,unit}은 단위 변환(unit 기본 'mm').
+ * 알 수 없는 이름·음수/0 치수는 명시 에러.
+ */
+function resolvePaperSize(size: PageSetupOption["size"]): { width: number; height: number } {
+  if (size === undefined) return { ...PAPER_SIZES.A4 };
+  if (typeof size === "string") {
+    const found = PAPER_SIZES[size as PaperSizeName];
+    if (!found) {
+      throw new Error(
+        `지원하지 않는 용지 종류: "${size}". 사용 가능: ${Object.keys(PAPER_SIZES).join(", ")} 또는 {width,height,unit} 커스텀.`
+      );
+    }
+    return { ...found };
+  }
+  const unit = size.unit ?? "mm";
+  const conv = (v: number): number => (unit === "mm" ? mmToHwpUnit(v) : Math.round(v));
+  const width = conv(size.width);
+  const height = conv(size.height);
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error(`용지 커스텀 치수는 양수여야 합니다: width=${size.width}, height=${size.height} (${unit}).`);
+  }
+  return { width, height };
+}
+
+/** CSS 길이 토큰 → mm. @page margin/size 전용(mm·cm·in·pt·px). 단위 없으면 undefined. */
+function cssLenToMm(token: string): number | undefined {
+  const t = token.trim();
+  if (/^0+(?:\.0+)?$/.test(t)) return 0; // CSS 규격: 0 은 무단위 허용(margin:0 등 흔한 초기화)
+  const m = /^([\d.]+)(mm|cm|in|pt|px)$/i.exec(t);
+  if (!m) return undefined;
+  const v = parseFloat(m[1]);
+  switch (m[2].toLowerCase()) {
+    case "mm": return v;
+    case "cm": return v * 10;
+    case "in": return v * 25.4;
+    case "pt": return (v * 25.4) / 72;
+    case "px": return (v * 25.4) / 96;
+  }
+  return undefined;
+}
+
+/** 용지명 소문자 → 정식 PaperSizeName(@page size 대소문자 무시 매칭). */
+const PAPER_NAME_BY_LOWER: Record<string, PaperSizeName> = Object.fromEntries(
+  (Object.keys(PAPER_SIZES) as PaperSizeName[]).map((n) => [n.toLowerCase(), n])
+);
+
+/**
+ * `@page { size; margin }` 규칙 → 부분 PageSetupOption (wku). 셀렉터 없는 bare `@page` 블록을
+ * 모두 순회해 병합한다(나중 블록이 같은 속성 덮어씀 = CSS cascade). `@page :first`/named page 같은
+ * 셀렉터 변형은 `\s*\{` 가 자연히 스킵(1차 미지원). 인쇄 전용 속성(bleed/marks 등)은 무시.
+ * size: 방향 키워드(portrait/landscape) / 용지명 / 두 길이(커스텀 mm). margin: 단축 1~4 + margin-면(mm 환산).
+ * 신호 없으면 undefined.
+ */
+function parseAtPage(css: string): PageSetupOption | undefined {
+  if (!css) return undefined;
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, ""); // CSS 주석 제거(선언 오파싱 방지)
+  const out: PageSetupOption = {};
+  const margins: NonNullable<PageSetupOption["margins"]> = {};
+  let hasMargin = false;
+  const setMargin = (side: keyof typeof margins, mm: number | undefined): void => {
+    if (mm !== undefined) {
+      margins[side] = mm;
+      hasMargin = true;
+    }
+  };
+  const re = /@page\s*\{([^{}]*)\}/gi;
+  let block: RegExpExecArray | null;
+  let found = false;
+  while ((block = re.exec(clean)) !== null) {
+    found = true;
+    for (const decl of block[1].split(";")) {
+      const i = decl.indexOf(":");
+      if (i < 0) continue;
+      const prop = decl.slice(0, i).trim().toLowerCase();
+      const val = decl.slice(i + 1).trim();
+      if (!val) continue;
+      if (prop === "size") {
+        const lens: number[] = [];
+        for (const tk of val.split(/\s+/)) {
+          const low = tk.toLowerCase();
+          if (low === "portrait" || low === "landscape") out.orientation = low;
+          else if (low === "auto") continue;
+          else if (PAPER_NAME_BY_LOWER[low]) out.size = PAPER_NAME_BY_LOWER[low];
+          else {
+            const mm = cssLenToMm(tk);
+            if (mm !== undefined) lens.push(mm);
+          }
+        }
+        if (lens.length >= 2) out.size = { width: lens[0], height: lens[1], unit: "mm" };
+      } else if (prop === "margin") {
+        const t = val.split(/\s+/).map(cssLenToMm);
+        // CSS 단축: 1=전면, 2=세로/가로, 3=상/가로/하, 4=상우하좌
+        let top: number | undefined, right: number | undefined, bottom: number | undefined, left: number | undefined;
+        if (t.length === 1) [top, right, bottom, left] = [t[0], t[0], t[0], t[0]];
+        else if (t.length === 2) [top, right, bottom, left] = [t[0], t[1], t[0], t[1]];
+        else if (t.length === 3) [top, right, bottom, left] = [t[0], t[1], t[2], t[1]];
+        else [top, right, bottom, left] = [t[0], t[1], t[2], t[3]];
+        setMargin("top", top);
+        setMargin("right", right);
+        setMargin("bottom", bottom);
+        setMargin("left", left);
+      } else if (prop === "margin-top") setMargin("top", cssLenToMm(val));
+      else if (prop === "margin-right") setMargin("right", cssLenToMm(val));
+      else if (prop === "margin-bottom") setMargin("bottom", cssLenToMm(val));
+      else if (prop === "margin-left") setMargin("left", cssLenToMm(val));
+    }
+  }
+  if (!found) return undefined;
+  if (hasMargin) out.margins = margins;
+  return out.size !== undefined || out.orientation !== undefined || out.margins !== undefined
+    ? out
+    : undefined;
+}
+
+/**
+ * 페이지 옵션 병합 — 필드별 API(api) 우선, 빈 자리는 @page CSS(css)로 채움 (wku).
+ * deriveHtmlPageDef 의 pageOpt 로 넘기면 컨테이너 휴리스틱은 자동으로 그 아래가 된다.
+ */
+function mergePageOpt(api?: PageSetupOption, css?: PageSetupOption): PageSetupOption | undefined {
+  if (!api) return css;
+  if (!css) return api;
+  const am = api.margins;
+  const cm = css.margins;
+  const margins =
+    am || cm
+      ? {
+          left: am?.left ?? cm?.left,
+          right: am?.right ?? cm?.right,
+          top: am?.top ?? cm?.top,
+          bottom: am?.bottom ?? cm?.bottom,
+          header: am?.header ?? cm?.header,
+          footer: am?.footer ?? cm?.footer,
+          gutter: am?.gutter ?? cm?.gutter,
+        }
+      : undefined;
+  return {
+    size: api.size ?? css.size,
+    orientation: api.orientation ?? css.orientation,
+    margins,
+  };
+}
+
+/**
+ * 페이지 설정 도출 → HwpPageDef (p1x·4qp). 한글 네이티브 모델: 용지 물리치수 고정 + landscape 플래그.
+ * 필드별 우선순위: 명시 옵션(pageOpt = API > @page CSS 병합) > 컨테이너 CSS(padding/max-width) > 기본(A4 / 세로 / 한글기본여백).
+ * 신호가 전혀 없으면(옵션·컨테이너 단서 모두 없음) undefined → 빌더 기본 폴백(현행 출력 바이트 동일).
+ */
+function deriveHtmlPageDef(
+  container: HtmlNode | undefined,
+  pageOpt?: PageSetupOption
+): HwpPageDef | undefined {
+  const style = container?.attrs.style;
+  const pad = parsePaddingSides(style);
+  const bodyWidth = parseContainerWidthHwp(style);
+  const hasPad =
+    pad.left !== undefined || pad.right !== undefined || pad.top !== undefined || pad.bottom !== undefined;
+  const m = pageOpt?.margins;
+  const hasMarginOpt =
+    !!m &&
+    (m.left !== undefined ||
+      m.right !== undefined ||
+      m.top !== undefined ||
+      m.bottom !== undefined ||
+      m.header !== undefined ||
+      m.footer !== undefined ||
+      m.gutter !== undefined);
+  const hasOpt = !!pageOpt && (pageOpt.size !== undefined || pageOpt.orientation !== undefined || hasMarginOpt);
+  // 신호 전무 → undefined(빌더 기본 폴백, 바이트 동일)
+  if (!hasOpt && !hasPad && bodyWidth === undefined) return undefined;
+
+  // 용지: 물리 치수 고정(세로 기준). 방향과 무관하게 스왑하지 않는다.
+  const paper = resolvePaperSize(pageOpt?.size);
+
+  // 여백: 옵션(mm) > 컨테이너 padding(면별) > 한글 기본.
+  const optMm = (v: number | undefined): number | undefined => (v === undefined ? undefined : mmToHwpUnit(v));
+  const left = optMm(m?.left) ?? pad.left ?? DEFAULT_PAGE_MARGIN.left;
+  const right = optMm(m?.right) ?? pad.right ?? DEFAULT_PAGE_MARGIN.right;
+  const top = optMm(m?.top) ?? pad.top ?? DEFAULT_PAGE_MARGIN.top;
+  const bottom = optMm(m?.bottom) ?? pad.bottom ?? DEFAULT_PAGE_MARGIN.bottom;
+  const header = optMm(m?.header) ?? DEFAULT_PAGE_MARGIN.header;
+  const footer = optMm(m?.footer) ?? DEFAULT_PAGE_MARGIN.footer;
+  const gutter = optMm(m?.gutter) ?? DEFAULT_PAGE_MARGIN.gutter;
+
+  // 방향: 명시 옵션 우선, 기본 'auto'(본문폭이 세로 가용폭을 넘으면 가로). 치수 스왑 없이 플래그만.
+  const orientation = pageOpt?.orientation ?? "auto";
+  let landscape: boolean;
+  if (orientation === "portrait") landscape = false;
+  else if (orientation === "landscape") landscape = true;
+  else {
+    const portraitUsable = paper.width - left - right; // 세로(짧은 변) 가용폭
+    landscape = bodyWidth !== undefined && bodyWidth > portraitUsable;
+  }
+
+  return {
+    width: paper.width,
+    height: paper.height,
+    left,
+    right,
+    top,
+    bottom,
+    header,
+    footer,
+    gutter,
+    landscape,
+  };
+}
+
 export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDocument {
-  const tree = parseToTree(html);
+  const { root: tree, styleText } = parseToTree(html);
+  // 페이지 옵션: API(options.page) > @page CSS 병합. 컨테이너 휴리스틱은 deriveHtmlPageDef 안에서 그 아래.
+  const effPage = mergePageOpt(options?.page, parseAtPage(styleText));
 
   const ctx: BuildContext = {
     charShapeIds: new Map(),
@@ -457,6 +760,9 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       p.runs.some((r) => ctx.charShapes[r.charShapeId]?.borderFillId !== undefined)
   );
 
+  // 페이지 설정: 병합 옵션(API > @page CSS) > 루트 컨테이너 CSS > 기본. 신호 없으면 undefined → 빌더 기본 폴백.
+  const pageDef = deriveHtmlPageDef(findPageContainer(tree), effPage);
+
   return {
     header: defaultFileHeader(),
     docInfo: {
@@ -478,7 +784,7 @@ export function htmlToHwpDocument(html: string, options?: ConvertOptions): HwpDo
       bullets: [],
       tabDefs: [],
     },
-    sections: [{ paragraphs: filtered }],
+    sections: [{ paragraphs: filtered, ...(pageDef ? { pageDef } : {}) }],
     binData: ctx.binData,
   };
 }
@@ -545,12 +851,28 @@ function renderNode(
     case "h5":
     case "h6": {
       const depth = Number(tag[1]);
+      const hStyle = parseInlineStyle(node.attrs.style);
+      // 제목 자체 color 가 있으면 제목 글자모양(굵게+제목 크기)에 글자색을 합쳐서 base 로 쓴다.
+      // (없으면 기본 제목 모양 그대로 — 회귀 없음. walkInline 은 baseId 를 직접 쓰므로 여기서 색을 실어야 함)
+      const headingSize = depth === 1 ? 1800 : depth === 2 ? 1600 : depth === 3 ? 1400 : 1200;
       const baseShapeId =
-        depth === 1 ? ids.idH1 : depth === 2 ? ids.idH2 : depth === 3 ? ids.idH3 : ids.idHmin;
+        hStyle.textColor !== undefined
+          ? registerCharShape(ctx, {
+              ...defaultCharShape(),
+              bold: true,
+              baseSize: headingSize,
+              textColor: hStyle.textColor,
+            })
+          : depth === 1
+            ? ids.idH1
+            : depth === 2
+              ? ids.idH2
+              : depth === 3
+                ? ids.idH3
+                : ids.idHmin;
       const runs = collectInlineRuns(node, ids, ctx, state, baseShapeId);
       const text = runsToText(runs);
       if (!text) return [];
-      const hStyle = parseInlineStyle(node.attrs.style);
       const hBfId =
         hStyle.shadeColor !== undefined
           ? registerBorderFill(ctx, hStyle.shadeColor, false)
