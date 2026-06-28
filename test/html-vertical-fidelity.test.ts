@@ -45,13 +45,12 @@ function bodyWidthOf(section: string): number {
 }
 
 describe("HTML→HWPX 세로 충실도", () => {
-  it("A′: HTML 단일행 문단 lineseg spacing = vertsize×0.3 (130%)", async () => {
+  it("A′: HTML 무명시 문단 lineseg spacing = vertsize×0.6 (기본 160% 통일)", async () => {
     const section = await sectionOf(await htmlToHwpx(`<p>안녕</p>`));
     const ls = linesegForText(section, "안녕");
     expect(ls).not.toBeNull();
-    // 130% → spacing/vertsize = 0.3 (종전 160%의 0.6 대비 타이트)
-    expect(ls!.spacing).toBe(Math.round(ls!.vertsize * 0.3));
-    expect(ls!.spacing).not.toBe(Math.round(ls!.vertsize * 0.6));
+    // 기본 줄간격 160%(md/HWP/한글 통일) → spacing/vertsize = 0.6
+    expect(ls!.spacing).toBe(Math.round(ls!.vertsize * 0.6));
   });
 
   it("A′ 무회귀: md 단일행 문단 lineseg spacing = vertsize×0.6 (160% 보존)", async () => {

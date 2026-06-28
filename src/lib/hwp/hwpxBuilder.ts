@@ -516,7 +516,9 @@ function buildCharPrXml(id: number, cs: HwpCharShape): string {
   const fontRef =
     `<hh:fontRef hangul="${ids.hangul}" latin="${ids.latin}" hanja="${ids.hanja}" japanese="${ids.japanese}" other="${ids.other}" symbol="${ids.symbol}" user="${ids.user}"/>`;
   const ratio = `<hh:ratio hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>`;
-  const spacing = `<hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>`;
+  // 자간(letter-spacing) — per-script 균일 percent. 미설정=0(종전과 동일, byte 무회귀).
+  const ls = cs.letterSpacing ?? 0;
+  const spacing = `<hh:spacing hangul="${ls}" latin="${ls}" hanja="${ls}" japanese="${ls}" other="${ls}" symbol="${ls}" user="${ls}"/>`;
   const relSz = `<hh:relSz hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>`;
   const offset = `<hh:offset hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>`;
   const italic = cs.italic ? `<hh:italic/>` : "";
