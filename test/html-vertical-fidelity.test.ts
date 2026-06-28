@@ -87,4 +87,20 @@ describe("HTML→HWPX 세로 충실도", () => {
     expect(section).toContain("<hp:tbl"); // pre 는 1x1 표 박스
     expect(sentinelCount(section)).toBe(0); // tightTableAnchor 미설정
   });
+
+  // 가로 오버플로우: 레이아웃 표(gap=cellSpacing)가 컬럼합을 본문폭에 그대로 채우면
+  // 한글이 표 폭 = 컬럼합 + cellSpacing×colCount 로 렌더해 우측 여백을 넘는다. 컬럼 스케일 시
+  // cellSpacing 을 예약해 footprint(컬럼합 + cellSpacing×colCount) ≤ 본문폭 이 되어야 한다.
+  it("C: gap 있는 grid 레이아웃 표 footprint ≤ 본문폭(우측 여백 미초과)", async () => {
+    const html = `<div style="display:grid; grid-template-columns:400px 400px; gap:18px"><div>좌</div><div>우</div></div>`;
+    const section = await sectionOf(await htmlToHwpx(html));
+    const tbl = section.match(/<hp:tbl\b([^>]*)>\s*<hp:sz width="(\d+)"/)!;
+    const cellSpacing = Number(tbl[1].match(/cellSpacing="(\d+)"/)![1]);
+    const colCnt = Number(tbl[1].match(/colCnt="(\d+)"/)![1]);
+    const tableW = Number(tbl[2]);
+    // 본문폭 = content lineseg horzsize.
+    const bodyW = Number(section.match(/<hp:lineseg\b[^>]*horzsize="(\d+)"/)![1]);
+    expect(cellSpacing).toBeGreaterThan(0); // gap 이 cellSpacing 으로 반영됨
+    expect(tableW + cellSpacing * colCnt).toBeLessThanOrEqual(bodyW);
+  });
 });
