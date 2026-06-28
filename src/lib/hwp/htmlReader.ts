@@ -1245,6 +1245,7 @@ function collectDivColumnsAsParagraph(
     styleId: 0,
     text: "",
     runs: [],
+    tightTableAnchor: true, // HTML 표앵커: 표 위 빈 줄 최소화(빌더 Fix B)
     controls: [
       {
         kind: "table",
@@ -1384,6 +1385,7 @@ function collectInlineSpansAsRowTable(
     styleId: 0,
     text: "",
     runs: [],
+    tightTableAnchor: true, // HTML 표앵커: 표 위 빈 줄 최소화(빌더 Fix B)
     controls: [
       {
         kind: "table",
@@ -1490,6 +1492,7 @@ function collectTableParagraph(
     styleId: 0,
     text: "",
     runs: [],
+    tightTableAnchor: true, // HTML 표앵커: 표 위 빈 줄 최소화(빌더 Fix B)
     controls: [
       { kind: "table", rowCount: trs.length, colCount: maxCols, cells, borderless: !tableBorder.hasBorder },
     ],
@@ -1673,7 +1676,10 @@ function defaultParaShape(): HwpParaShape {
     indent: 0,
     prevSpacing: 0,
     nextSpacing: 0,
-    lineSpacing: 160,
+    // HTML 경로 기본 줄간격: 브라우저 line-height:normal(≈1.2)·docx 단일에 근사하도록 130%.
+    // (HWP 기본 160% 보다 타이트.) htmlReader 전용 — md=mdReader, HWP=docInfo 소스 별도라 무영향.
+    // 단일행 문단은 빌더 lineseg 가 이 값을 spacing 으로 흘려 실제로 반영(buildLineSeg).
+    lineSpacing: 130,
   };
 }
 
