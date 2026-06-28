@@ -316,6 +316,11 @@ export interface HwpCharShape {
   strikeout: boolean;
   /** 글자 테두리 — docInfo.borderFills 인덱스(인라인 span border). 미설정 시 없음 */
   borderFillId?: number;
+  /**
+   * 자간(letter-spacing) — per-script 균일 percent(HWPX `<hh:spacing>`). 미설정 시 0.
+   * CSS letter-spacing(px/em)을 글자크기 기준 %로 환산해 담는다(htmlReader). md/HWP 미설정→0.
+   */
+  letterSpacing?: number;
 }
 
 export interface HwpParaShape {

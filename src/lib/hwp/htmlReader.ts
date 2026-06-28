@@ -126,6 +126,7 @@ interface InlineState {
   baseSize?: number; // 글자 크기 (HWPUNIT, 1000 = 10pt)
   borderFillId?: number; // 인라인 span border → 글자 테두리(docInfo.borderFills 인덱스)
   inheritAlign?: HwpParaShape["alignment"]; // 부모 flex/grid 컨테이너의 가로축 정렬(직접 자식 1단계만)
+  letterSpacing?: number; // 자간(letter-spacing) → 글자 spacing percent
 }
 
 /** 인라인 style 속성에서 색/크기/정렬을 파싱. */
@@ -135,6 +136,8 @@ interface ParsedStyle {
   baseSize?: number;
   align?: HwpParaShape["alignment"];
   vAlign?: "TOP" | "CENTER" | "BOTTOM";
+  lineSpacing?: number; // line-height → 문단 줄간격 percent (무단위/%/px 환산)
+  letterSpacing?: number; // letter-spacing → 글자 자간 percent (px/em 환산)
 }
 
 /** CSS px → HWPUNIT (1/7200 인치): 1px(1/96 인치) = 75 HWPUNIT. */
@@ -160,9 +163,21 @@ function parseColorToHwp(v: string): number | undefined {
   return (r & 0xff) | ((g & 0xff) << 8) | ((b & 0xff) << 16);
 }
 
-function parseInlineStyle(style: string | undefined): ParsedStyle {
+/** 상속된 유효 글자크기(px) — InlineState.baseSize(HWPUNIT)→px. 미설정이면 undefined(파서가 16 폴백). */
+function inheritedFontPx(state: InlineState): number | undefined {
+  return state.baseSize !== undefined ? state.baseSize / 75 : undefined;
+}
+
+/**
+ * 인라인 style 파싱. `effectiveFontPx` = 이 요소에 적용되는 유효(상속) 글자크기(px) — line-height·
+ * letter-spacing 의 px 환산 기준. 요소 자체 font-size 가 있으면 그것이 우선, 없으면 상속값, 둘 다
+ * 없으면 16px. (명시 px 값을 정확히 반영하기 위함 — 자체 font-size 만 보던 한계 보정.)
+ */
+function parseInlineStyle(style: string | undefined, effectiveFontPx?: number): ParsedStyle {
   const out: ParsedStyle = {};
   if (!style) return out;
+  let lineHeightRaw: string | undefined;
+  let letterSpacingRaw: string | undefined;
   for (const decl of style.split(";")) {
     const i = decl.indexOf(":");
     if (i < 0) continue;
@@ -190,6 +205,36 @@ function parseInlineStyle(style: string | undefined): ParsedStyle {
       else if (v === "middle") out.vAlign = "CENTER";
       else if (v === "bottom") out.vAlign = "BOTTOM";
       // baseline/sub/super 등은 미설정(빌더 기본)
+    } else if (prop === "line-height") lineHeightRaw = val;
+    else if (prop === "letter-spacing") letterSpacingRaw = val;
+  }
+  // px 환산 기준 글자크기: 요소 자체 font-size(out.baseSize) > 상속(effectiveFontPx) > 16px.
+  const fontPx = out.baseSize !== undefined ? out.baseSize / 75 : effectiveFontPx ?? 16;
+  if (lineHeightRaw !== undefined) {
+    const v = lineHeightRaw.toLowerCase();
+    if (v !== "normal" && v !== "inherit" && v !== "") {
+      const px = /^([\d.]+)px$/.exec(v);
+      const pct = /^([\d.]+)%$/.exec(v);
+      const num = /^([\d.]+)$/.exec(v); // 무단위 배수
+      // 무단위·% → 배수(×100), px → font-size 기준 비율(×100).
+      let lhPct: number | undefined;
+      if (num) lhPct = Math.round(parseFloat(num[1]) * 100);
+      else if (pct) lhPct = Math.round(parseFloat(pct[1]));
+      else if (px) lhPct = Math.round((parseFloat(px[1]) / fontPx) * 100);
+      // line-height:0 등 비양수는 무시(기본값 유지) — 모든 단위 일관 처리, 음수 spacing/줄겹침 방지.
+      if (lhPct !== undefined && lhPct > 0) out.lineSpacing = lhPct;
+    }
+  }
+  if (letterSpacingRaw !== undefined) {
+    const v = letterSpacingRaw.toLowerCase();
+    if (v !== "normal" && v !== "inherit" && v !== "") {
+      const px = /^(-?[\d.]+)px$/.exec(v);
+      const em = /^(-?[\d.]+)em$/.exec(v);
+      // 자간 % = letter-spacing / 글자크기 × 100. em 은 글자크기 기준이라 ×100 직결.
+      let pctVal: number | undefined;
+      if (em) pctVal = Math.round(parseFloat(em[1]) * 100);
+      else if (px) pctVal = Math.round((parseFloat(px[1]) / fontPx) * 100);
+      if (pctVal !== undefined && pctVal !== 0) out.letterSpacing = pctVal;
     }
   }
   return out;
@@ -851,10 +896,12 @@ function renderNode(
     case "h5":
     case "h6": {
       const depth = Number(tag[1]);
-      const hStyle = parseInlineStyle(node.attrs.style);
+      // 제목 텍스트는 headingSize 로 렌더되므로(아래 baseShapeId), line-height px 환산 기준도
+      // 조상 font-size 가 아니라 headingSize 여야 일관(F-01). headingSize 를 먼저 계산해 넘긴다.
+      const headingSize = depth === 1 ? 1800 : depth === 2 ? 1600 : depth === 3 ? 1400 : 1200;
+      const hStyle = parseInlineStyle(node.attrs.style, headingSize / 75);
       // 제목 자체 color 가 있으면 제목 글자모양(굵게+제목 크기)에 글자색을 합쳐서 base 로 쓴다.
       // (없으면 기본 제목 모양 그대로 — 회귀 없음. walkInline 은 baseId 를 직접 쓰므로 여기서 색을 실어야 함)
-      const headingSize = depth === 1 ? 1800 : depth === 2 ? 1600 : depth === 3 ? 1400 : 1200;
       const baseShapeId =
         hStyle.textColor !== undefined
           ? registerCharShape(ctx, {
@@ -880,8 +927,8 @@ function renderNode(
       return [
         {
           paraShapeId:
-            hStyle.align !== undefined || hBfId !== undefined
-              ? registerParaShape(ctx, hStyle.align ?? "justify", hBfId)
+            hStyle.align !== undefined || hBfId !== undefined || hStyle.lineSpacing !== undefined
+              ? registerParaShape(ctx, hStyle.align ?? "justify", hBfId, hStyle.lineSpacing)
               : 0,
           styleId: 0,
           text,
@@ -952,7 +999,7 @@ function renderNode(
       // 코드블록: HTML <pre> 의 배경·테두리·구문강조(토큰) 색·줄바꿈을 보존한다.
       // 배경 박스+외곽 테두리는 1×1 표 셀(채우기+테두리)로, 토큰색은 줄 문단의 색 run 으로,
       // 들여쓰기/개행은 extractPreLines(공백 비축약)로 — 한글에서 코드블록이 박스로 렌더된다.
-      const ps = parseInlineStyle(node.attrs.style);
+      const ps = parseInlineStyle(node.attrs.style, inheritedFontPx(state));
       const border = parseBorderStyle(node.attrs.style);
       const padding = parsePadding(node.attrs.style);
       const baseState: InlineState = { bold: false, italic: false, mono: true };
@@ -1037,14 +1084,19 @@ function renderNodeChildren(
   state: InlineState,
   prefix: string
 ): HwpParagraph[] {
+  // 블록 컨테이너 자신의 font-size 를 자식(텍스트·블록)에 상속(CSS 정합 + descendant 의 px
+  // line-height/letter-spacing 환산 기준). 자식이 자체 font-size 를 가지면 walkInline/parseInlineStyle
+  // 에서 그게 우선(override). 헤딩은 state.baseSize 를 안 쓰므로 크기 불변.
+  const ownFs = parseInlineStyle(node.attrs.style).baseSize;
+  const childState: InlineState = ownFs !== undefined ? { ...state, baseSize: ownFs } : state;
   // 자식이 모두 인라인이면 단일 paragraph 로 합치기
   const allInline = node.children.every((c) => typeof c === "string" || isInlineTag(c.tag));
   if (allInline) {
-    const runs = collectInlineRuns(node, ids, ctx, state);
+    const runs = collectInlineRuns(node, ids, ctx, childState);
     const text = runsToText(runs);
     const controls = collectInlineControls(node, ctx);
     if (!text && controls.length === 0) return [];
-    const ownStyle = parseInlineStyle(node.attrs.style);
+    const ownStyle = parseInlineStyle(node.attrs.style, inheritedFontPx(state));
     const align = ownStyle.align;
     // 블록 태그의 배경은 문단 전체 채우기(borderFill)로. 인라인 태그 배경은 walkInline 이 글자 음영 처리.
     const blockBg = !isInlineTag(node.tag) ? ownStyle.shadeColor : undefined;
@@ -1052,8 +1104,8 @@ function renderNodeChildren(
     return [
       {
         paraShapeId:
-          align !== undefined || bfId !== undefined
-            ? registerParaShape(ctx, align ?? "justify", bfId)
+          align !== undefined || bfId !== undefined || ownStyle.lineSpacing !== undefined
+            ? registerParaShape(ctx, align ?? "justify", bfId, ownStyle.lineSpacing)
             : 0,
         styleId: 0,
         text: prefix + text,
@@ -1065,11 +1117,11 @@ function renderNodeChildren(
       },
     ];
   }
-  // 블록 자식이 섞여있으면 각각 별도 paragraph 로
+  // 블록 자식이 섞여있으면 각각 별도 paragraph 로 (childState 로 font-size 상속 전파)
   const out: HwpParagraph[] = [];
   let blockPrefix = prefix;
   for (const child of node.children) {
-    out.push(...renderNode(child, ids, ctx, state, blockPrefix));
+    out.push(...renderNode(child, ids, ctx, childState, blockPrefix));
     blockPrefix = ""; // prefix 는 첫 paragraph 에만 적용
   }
   return out;
@@ -1130,12 +1182,13 @@ function walkInline(
   if (tag === "em" || tag === "i") nextState = { ...nextState, italic: true };
   if (tag === "code" || tag === "samp" || tag === "kbd") nextState = { ...nextState, mono: true };
   // inline style(color/background-color/font-size) 상속 누적
-  const st = parseInlineStyle(node.attrs.style);
+  const st = parseInlineStyle(node.attrs.style, inheritedFontPx(state));
   if (st.textColor !== undefined) nextState = { ...nextState, textColor: st.textColor };
   // 배경은 인라인 태그(span/strong 등)만 글자 음영(shadeColor)으로 전파.
   // 블록(div/p/td 등)의 배경은 문단/셀 borderFill 로 분기되므로 글자 음영으로 새지 않게 한다.
   if (st.shadeColor !== undefined && isInlineTag(tag)) nextState = { ...nextState, shadeColor: st.shadeColor };
   if (st.baseSize !== undefined) nextState = { ...nextState, baseSize: st.baseSize };
+  if (st.letterSpacing !== undefined) nextState = { ...nextState, letterSpacing: st.letterSpacing };
   // 인라인 요소(span 등)의 border → 글자 테두리(도장박스). 자식 run 에 실린다.
   const ib = isInlineTag(tag) ? parseBorderStyle(node.attrs.style) : { hasBorder: false, borders: null };
   if (ib.hasBorder) {
@@ -1676,10 +1729,10 @@ function defaultParaShape(): HwpParaShape {
     indent: 0,
     prevSpacing: 0,
     nextSpacing: 0,
-    // HTML 경로 기본 줄간격: 브라우저 line-height:normal(≈1.2)·docx 단일에 근사하도록 130%.
-    // (HWP 기본 160% 보다 타이트.) htmlReader 전용 — md=mdReader, HWP=docInfo 소스 별도라 무영향.
-    // 단일행 문단은 빌더 lineseg 가 이 값을 spacing 으로 흘려 실제로 반영(buildLineSeg).
-    lineSpacing: 130,
+    // HTML 경로 기본 줄간격: md·HWP·한글 native 와 통일해 160%(PM 결정 2026-06-28). CSS
+    // line-height 명시 시 그 값으로 대체(registerParaShape lineSpacing 인자). 단일행 문단은
+    // 빌더 lineseg 가 이 값을 spacing 으로 흘려 실제로 반영(buildLineSeg).
+    lineSpacing: 160,
   };
 }
 
@@ -1765,18 +1818,23 @@ function registerCharShape(ctx: BuildContext, cs: HwpCharShape): number {
   return id;
 }
 
-/** 정렬 + 문단 배경(borderFillIDRef)별 paraShape 동적 등록. */
+/** 정렬 + 문단 배경(borderFillIDRef) + 줄간격(line-height)별 paraShape 동적 등록. */
 function registerParaShape(
   ctx: BuildContext,
   align: HwpParaShape["alignment"],
-  borderFillIDRef?: number
+  borderFillIDRef?: number,
+  lineSpacing?: number
 ): number {
-  if (align === "justify" && borderFillIDRef === undefined) return 0; // 기본(default)과 동일
-  const key = `align:${align}|bf:${borderFillIDRef ?? "n"}`;
+  // lineSpacing 미지정(또는 기본값과 동일)이면 기본 줄간격 사용. 정렬·배경·줄간격 모두 기본이면 id 0.
+  const ls = lineSpacing !== undefined && lineSpacing !== defaultParaShape().lineSpacing ? lineSpacing : undefined;
+  if (align === "justify" && borderFillIDRef === undefined && ls === undefined) return 0; // 기본(default)과 동일
+  const key = `align:${align}|bf:${borderFillIDRef ?? "n"}|ls:${ls ?? "d"}`;
   const existing = ctx.paraShapeIds.get(key);
   if (existing !== undefined) return existing;
   const id = ctx.paraShapes.length;
-  ctx.paraShapes.push({ ...defaultParaShape(), alignment: align, borderFillIDRef });
+  const ps: HwpParaShape = { ...defaultParaShape(), alignment: align, borderFillIDRef };
+  if (ls !== undefined) ps.lineSpacing = ls;
+  ctx.paraShapes.push(ps);
   ctx.paraShapeIds.set(key, id);
   return id;
 }
@@ -1790,7 +1848,8 @@ function resolveInlineCharShape(ids: ShapeIds, ctx: BuildContext, state: InlineS
     state.textColor === undefined &&
     state.shadeColor === undefined &&
     state.baseSize === undefined &&
-    state.borderFillId === undefined
+    state.borderFillId === undefined &&
+    state.letterSpacing === undefined
   ) {
     return pickInlineId(ids, state);
   }
@@ -1804,5 +1863,6 @@ function resolveInlineCharShape(ids: ShapeIds, ctx: BuildContext, state: InlineS
   if (state.shadeColor !== undefined) cs.shadeColor = state.shadeColor;
   if (state.baseSize !== undefined) cs.baseSize = state.baseSize;
   if (state.borderFillId !== undefined) cs.borderFillId = state.borderFillId;
+  if (state.letterSpacing !== undefined) cs.letterSpacing = state.letterSpacing;
   return registerCharShape(ctx, cs);
 }
