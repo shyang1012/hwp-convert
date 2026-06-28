@@ -176,8 +176,9 @@ export async function buildHwpxFromDocument(
   // header.xml — DocInfo 기반 풀 빌드
   zip.file("Contents/header.xml", buildHeaderXmlFromDocInfo(doc.docInfo, doc.sections.length));
 
-  // 섹션 — lineseg 높이 계산에 쓰도록 charShapes 를 모듈 상태에 노출(문단 채우기 박스 높이 정합)
+  // 섹션 — lineseg 높이/줄간격 계산에 쓰도록 charShapes·paraShapes 를 모듈 상태에 노출
   layoutCharShapes = doc.docInfo.charShapes ?? [];
+  layoutParaShapes = doc.docInfo.paraShapes ?? [];
   for (let i = 0; i < doc.sections.length; i++) {
     zip.file(`Contents/section${i}.xml`, buildSectionXml(doc.sections[i], binEntries, i));
   }
@@ -717,19 +718,40 @@ function buildSectionXmlInner(section: HwpSection, binEntries: BinEntry[], secIn
 
 // 현재 빌드 중 문서의 charShapes — lineseg 높이 계산용(문단 채우기/테두리 박스가 글자를 감싸도록).
 let layoutCharShapes: HwpCharShape[] = [];
+// 현재 빌드 중 문서의 paraShapes — lineseg 줄간격(spacing) 을 문단 lineSpacing 에서 도출하는 데 사용.
+let layoutParaShapes: HwpParaShape[] = [];
 
 /**
  * 문단 라인세그를 글자 높이에 맞춰 생성. 채우기/테두리 박스 높이가 lineseg 를 따르므로,
  * 큰 글자(제목 등)에서 박스가 글자보다 작아지지 않도록 한다. horzsize 는 섹션 본문폭(가로/세로 반영).
  * 세로 A4·h=1000 이면 DEFAULT_LINESEG 와 동일(무회귀).
  */
-function buildLineSeg(maxHeight: number): string {
+function buildLineSeg(maxHeight: number, lineSpacing = 160): string {
   const h = Math.max(1000, Math.round(maxHeight));
   const baseline = Math.round(h * 0.85);
-  const spacing = Math.round(h * 0.6);
+  // lineseg 줄간격(아래 여백)을 문단 lineSpacing 에서 도출. 한글은 단일행 문단 높이를
+  // paraPr 가 아니라 이 lineseg 로 신뢰(메모리 hwpx-lineseg-trust)하므로, 줄간격 축소가
+  // 실제로 반영되려면 여기에 흘려야 한다. 160% → h*0.6(종전과 동일, md/HWP 무회귀),
+  // HTML 130% → h*0.3(타이트). PERCENT 100%→0(단일).
+  const spacing = Math.round(h * Math.max(0, lineSpacing / 100 - 1));
   return (
     `<hp:linesegarray>` +
     `<hp:lineseg textpos="0" vertpos="0" vertsize="${h}" textheight="${h}" baseline="${baseline}" spacing="${spacing}" horzpos="0" horzsize="${currentBodyWidth}" flags="393216"/>` +
+    `</hp:linesegarray>`
+  );
+}
+
+// 표만 든 앵커 문단용 최소 lineseg(≈1pt). buildLineSeg 의 1000 클램프를 우회 —
+// 텍스트가 없어 채우기/테두리 박스 높이 보존이 불필요하므로 표 위 빈 줄만 1pt 로 남긴다.
+// docx-convert 의 NESTED_TABLE_SENTINEL(20twip exact) 대응. (완전 생략 시 인접 표 경계 붕괴 위험)
+const TIGHT_ANCHOR_HEIGHT = 120; // HWPUNIT ≈ 1.2pt
+function buildTightAnchorLineSeg(): string {
+  const h = TIGHT_ANCHOR_HEIGHT;
+  return (
+    `<hp:linesegarray>` +
+    `<hp:lineseg textpos="0" vertpos="0" vertsize="${h}" textheight="${h}" baseline="${Math.round(
+      h * 0.85
+    )}" spacing="0" horzpos="0" horzsize="${currentBodyWidth}" flags="393216"/>` +
     `</hp:linesegarray>`
   );
 }
@@ -802,12 +824,27 @@ function buildParagraphXml(p: HwpParagraph, binEntries: BinEntry[]): string {
     parts.push(`<hp:run charPrIDRef="0"/>`);
   }
 
+  // 문단 줄간격: paraShape 의 lineSpacing 을 lineseg spacing 으로 흘린다(없으면 160 폴백=종전).
+  const lineSpacing = layoutParaShapes[p.paraShapeId]?.lineSpacing ?? 160;
+  // Fix B: 표만 든 앵커 문단(텍스트 없음)이고 HTML 경로 플래그가 있으면 빈 lineseg 를
+  // 최소 높이(1pt 센티넬)로 — 표 위 빈 줄 제거. 완전 생략 아님(인접 표 경계 붕괴 방지).
+  const isTableOnlyAnchor =
+    p.tightTableAnchor === true &&
+    p.runs.length === 0 &&
+    p.text.length === 0 &&
+    p.controls.length > 0 &&
+    p.controls.every((c) => c.kind === "table");
+  const lineSeg = !fitsOneLine(p)
+    ? ""
+    : isTableOnlyAnchor
+      ? buildTightAnchorLineSeg() // 1pt 센티넬(표 위 빈 줄 제거, 완전 생략 아님)
+      : buildLineSeg(paragraphMaxHeight(p), lineSpacing);
   return (
     `<hp:p id="${makeParaId()}" paraPrIDRef="${p.paraShapeId}" styleIDRef="${p.styleId}" pageBreak="0" columnBreak="0" merged="0">` +
     parts.join("") +
     // 1줄에 들어가는 문단만 단일 lineseg(채우기/테두리 박스 높이 보존). 한 줄 초과 가능 문단은
     // linesegarray 생략 → 한글이 줄바꿈 재계산(긴 산문·긴 배경색 문단의 검은 띠 겹침 방지).
-    (fitsOneLine(p) ? buildLineSeg(paragraphMaxHeight(p)) : "") +
+    lineSeg +
     `</hp:p>`
   );
 }

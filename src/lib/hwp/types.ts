@@ -59,6 +59,12 @@ export interface HwpParagraph {
   runs: HwpRun[];
   /** 인라인 컨트롤들 (표/그림/필드/머리말 등) */
   controls: HwpControl[];
+  /**
+   * 표만 든 앵커 문단의 빈 lineseg 를 최소 높이(1pt 센티넬)로 줄여 표 위 빈 줄을 제거한다.
+   * HTML 경로(htmlReader 의 표 생성기)만 설정 — md/HWP 바이너리 경로는 미설정(무영향).
+   * 완전 생략이 아니라 최소값이라 인접 표 경계 붕괴를 막는다(docx-convert 미러).
+   */
+  tightTableAnchor?: boolean;
 }
 
 export interface HwpSection {
