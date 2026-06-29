@@ -114,10 +114,17 @@ describe("레이아웃 표 셀이 컨테이너/td 스타일 반영 (충실도)",
     expect(header).toMatch(/<hh:align horizontal="RIGHT"/);
   });
 
-  it("데이터 표 td line-height 도 반영", async () => {
+  it("데이터 표 td line-height(무단위) 반영", async () => {
     const html = `<table><tr><td style="font-size:16px; line-height:1.3">셀</td></tr></table>`;
     const { header } = await partsOf(await htmlToHwpx(html));
     expect(paraLineSpacings(header)).toContain(130);
+  });
+
+  it("데이터 표 td line-height(px) 는 td 자체 font-size 기준 환산 (표 격리 정합, F-01)", async () => {
+    // 표 셀은 외부 font-size 미상속 → px 환산은 td 자체 font-size. 30/20=150%.
+    const html = `<table><tr><td style="font-size:20px; line-height:30px">셀</td></tr></table>`;
+    const { header } = await partsOf(await htmlToHwpx(html));
+    expect(paraLineSpacings(header)).toContain(150);
   });
 
   it("무회귀: 스타일 없는 표 셀은 기본(우측정렬·커스텀 줄간격 없음)", async () => {
