@@ -1397,6 +1397,10 @@ function collectInlineSpansAsRowTable(
   const cols = Math.max(1, spans.length);
   const cellState: InlineState = { ...state, inheritAlign: undefined };
   const emptyPara = (): HwpParagraph => ({ paraShapeId: 0, styleId: 0, text: "", runs: [], controls: [] });
+  // 컨테이너 행의 line-height → 셀 문단 줄간격(미지정 시 0=기본). 셀이 행 div 의 line-height 를
+  // 못 받아 기본 160% 로 떨어지던 부풀음 보정. px 환산은 컨테이너 유효 글자크기 기준.
+  const cellLs = parseInlineStyle(container.attrs.style, inheritedFontPx(state)).lineSpacing;
+  const cellParaId = cellLs !== undefined ? registerParaShape(ctx, "justify", undefined, cellLs) : 0;
   const cells: HwpTableCell[] = [];
   const colWidths: number[] = [];
   let allHaveWidth = true;
@@ -1408,7 +1412,7 @@ function collectInlineSpansAsRowTable(
     const runs = isEmptyBordered ? [] : collectInlineRuns(span, ids, ctx, cellState);
     const para =
       runs.length > 0
-        ? { paraShapeId: 0, styleId: 0, text: runsToText(runs), runs, controls: [] }
+        ? { paraShapeId: cellParaId, styleId: 0, text: runsToText(runs), runs, controls: [] }
         : emptyPara();
     const w = parseLengthPxPct(cssProp(span.attrs.style, "width"));
     const designW = w && !w.pct && w.v > 0 ? pxToHwpUnit(w.v) : 0;
@@ -1510,8 +1514,9 @@ function collectTableParagraph(
   const cells: HwpTableCell[] = tcs.map(({ row, col, isHeader, node, colSpan, rowSpan }) => {
     // baseId 를 고정하지 않고 state.bold 로 처리해야 셀의 inline style(색/크기)이 반영된다.
     const runs = collectInlineRuns(node, ids, ctx, { bold: isHeader, italic: false, mono: false });
+    const cellStyle = parseInlineStyle(node.attrs.style);
     // 셀 배경/테두리 → 셀 borderFill. 명시 border 있으면 그 테두리, 없고 bg 만 있으면 검정 격자 유지(PR-01).
-    const cellBg = parseInlineStyle(node.attrs.style).shadeColor;
+    const cellBg = cellStyle.shadeColor;
     const cb = parseBorderStyle(node.attrs.style);
     let borderFillId: number | undefined;
     if (cb.hasBorder) borderFillId = registerBorderFillEx(ctx, cb.borders, cellBg);
@@ -1519,7 +1524,12 @@ function collectTableParagraph(
     else borderFillId = undefined;
     // 마감: padding→cellMargin, vertical-align→vertAlign(데이터 셀은 미지정 시 빌더 기본 CENTER).
     const cellMargin = parsePadding(node.attrs.style);
-    const vertAlign = parseInlineStyle(node.attrs.style).vAlign;
+    const vertAlign = cellStyle.vAlign;
+    // 셀 문단: td 자체 text-align(숫자열 우측정렬 등)·line-height 반영. 미지정 시 0(기본, 무회귀).
+    const cellPid =
+      cellStyle.align !== undefined || cellStyle.lineSpacing !== undefined
+        ? registerParaShape(ctx, cellStyle.align ?? "justify", undefined, cellStyle.lineSpacing)
+        : 0;
     return {
       col,
       row,
@@ -1530,7 +1540,7 @@ function collectTableParagraph(
       vertAlign,
       paragraphs: [
         {
-          paraShapeId: 0,
+          paraShapeId: cellPid,
           styleId: 0,
           text: runsToText(runs),
           runs,
