@@ -99,6 +99,33 @@ describe("letter-spacing(자간) 명시 반영", () => {
   });
 });
 
+describe("레이아웃 표 셀이 컨테이너/td 스타일 반영 (충실도)", () => {
+  it("라벨:값 flex 행 → 셀 문단이 컨테이너 line-height 반영(160% 아님)", async () => {
+    // 명시 width span 행 → collectInlineSpansAsRowTable. 컨테이너 line-height:1.4 → 셀 140%.
+    const html = `<div style="line-height:1.4; font-size:16px; display:flex; gap:9px"><span style="width:80px">발주일</span><span style="width:4px">:</span><span style="width:200px">예시</span></div>`;
+    const { header } = await partsOf(await htmlToHwpx(html));
+    expect(paraLineSpacings(header)).toContain(140);
+    expect(paraLineSpacings(header).every((v) => v === 160)).toBe(false);
+  });
+
+  it("데이터 표 td text-align:right → 셀 문단 우측정렬(숫자열 충실도)", async () => {
+    const html = `<table><tr><td style="text-align:left">품목</td><td style="text-align:right">1,000</td></tr></table>`;
+    const { header } = await partsOf(await htmlToHwpx(html));
+    expect(header).toMatch(/<hh:align horizontal="RIGHT"/);
+  });
+
+  it("데이터 표 td line-height 도 반영", async () => {
+    const html = `<table><tr><td style="font-size:16px; line-height:1.3">셀</td></tr></table>`;
+    const { header } = await partsOf(await htmlToHwpx(html));
+    expect(paraLineSpacings(header)).toContain(130);
+  });
+
+  it("무회귀: 스타일 없는 표 셀은 기본(우측정렬·커스텀 줄간격 없음)", async () => {
+    const { header } = await partsOf(await htmlToHwpx(`<table><tr><td>가</td><td>나</td></tr></table>`));
+    expect(header).not.toMatch(/<hh:align horizontal="RIGHT"/);
+  });
+});
+
 describe("무회귀: md/HWP 경로", () => {
   it("md 문단 줄간격 160% 유지", async () => {
     const { header } = await partsOf(await markdownToHwpx(`안녕`));
